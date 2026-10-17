@@ -40,23 +40,28 @@ def validate_journey_row(
     """
     if not np.isfinite(conversions) or not np.isfinite(nulls) or conversions < 0 or nulls < 0:
         raise ValueError(
-            "Ervenytelen konverzios/kilepesi szam az utvonalon "
-            f"{path!r}: conversions={conversions!r}, nulls={nulls!r}"
+            f"Érvénytelen konverziós/kilépési szám az útvonalon {path!r}: "
+            f"conversions={conversions!r}, nulls={nulls!r}"
         )
     if not np.isfinite(net_margin):
         raise ValueError(
-            f"Ervenytelen vegetlen penzugyi ertek az utvonalon {path!r}: "
+            f"Érvénytelen végtelen pénzügyi érték az útvonalon {path!r}: "
             f"net_margin={net_margin!r}"
         )
-    # Null volumen sor (conversions=0, nulls=0) nem Represental journey-t, de
-    # a KPI-osszegek nevertheless belefoglalhatnak belole penget. Egyertelmu
-    # szerzodu: null volumennel nem szerezheto be penzugyi ertek.
+    if revenue is not None and not np.isfinite(revenue):
+        raise ValueError(
+            f"Érvénytelen végtelen pénzügyi érték az útvonalon {path!r}: "
+            f"revenue={revenue!r}"
+        )
+    # Null volúmenes sort (conversions=0, nulls=0) nem reprezentál journey-t,
+    # de a KPI-összegek belefoglalhatná belőle a pénzt. Egyértelmű szerződés:
+    # null volúmenes journey nem generálhat bevételeket vagy fedezetet.
     total = conversions + nulls
     if total <= 0 and revenue is not None and (revenue != 0.0 or net_margin != 0.0):
         raise ValueError(
-            f"Null volumen journey '{path}' tartalmaz penzugyi erteket: "
-            f"revenue={revenue!r}, net_margin={net_margin!r}. Null volumennel "
-            "nem szerezheto be bevitel vagy fedezet."
+            f"Null volúmenes journey '{path}' tartalmaz pénzügyi értéket: "
+            f"revenue={revenue!r}, net_margin={net_margin!r}. Null volúmenes "
+            "journey nem tartozhat bevételezéshez vagy fedezethez."
         )
 
 

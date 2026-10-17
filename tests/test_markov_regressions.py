@@ -84,7 +84,7 @@ def test_negative_counts_rejected_by_engine():
             "nulls": [0, -2],
         }
     )
-    with pytest.raises(ValueError, match="Ervenytelen"):
+    with pytest.raises(ValueError, match="Érvénytelen"):
         MarkovJourneyEngine(df, k=2)
 
 
@@ -97,7 +97,7 @@ def test_non_finite_counts_rejected_by_engine():
             "nulls": [5, 5, 5],
         }
     )
-    with pytest.raises(ValueError, match="Ervenytelen"):
+    with pytest.raises(ValueError, match="Érvénytelen"):
         MarkovJourneyEngine(df, k=2)
 
 
@@ -111,7 +111,7 @@ def test_non_finite_margin_rejected_by_engine():
             "net_margin": [100.0, np.inf],
         }
     )
-    with pytest.raises(ValueError, match="Ervenytelen"):
+    with pytest.raises(ValueError, match="Érvénytelen"):
         MarkovJourneyEngine(df, k=2)
 
 
@@ -142,14 +142,14 @@ def test_csv_loader_rejects_empty_and_separator_paths(tmp_path):
 def test_csv_loader_rejects_infinite_revenue(tmp_path):
     p = tmp_path / "inf_rev.csv"
     p.write_text("path,conversions,nulls,revenue,net_margin\nA>B,1,1,inf,0.3\n")
-    with pytest.raises(ValueError, match="Érvénytelen pénzügyi érték"):
+    with pytest.raises(ValueError, match="Érvénytelen"):
         load_csv_journeys(str(p))
 
 
 def test_csv_loader_rejects_infinite_margin(tmp_path):
     p = tmp_path / "inf_mar.csv"
     p.write_text("path,conversions,nulls,revenue,net_margin\nA>B,1,1,100,inf\n")
-    with pytest.raises(ValueError, match="Ervenytelen"):
+    with pytest.raises(ValueError, match="Érvénytelen"):
         load_csv_journeys(str(p))
 
 
@@ -163,7 +163,7 @@ def test_csv_loader_rejects_channel_name_with_delimiter(tmp_path):
 def test_csv_loader_rejects_zero_volume_with_money(tmp_path):
     p = tmp_path / "zero_vol.csv"
     p.write_text("path,conversions,nulls,revenue,net_margin\nA,1,0,100,30\nB,0,0,1000,300\n")
-    with pytest.raises(ValueError, match="Null volumen"):
+    with pytest.raises(ValueError, match="Null volúmenes"):
         load_csv_journeys(str(p))
 
 
@@ -279,7 +279,83 @@ def test_engine_scales_to_many_channels():
     assert loops == []
 
 
-def test_deterministic_steps_exact_values():
+def test_heatmap_selection_retains_highest_traffic_states():
+    """Bounded heatmap keeps the states with the most observed outgoing traffic."""
+    # Must stay in sync with MAX_DISPLAY_STATES in app.py.
+    MAX_DISPLAY_STATES = 30
+
+    n_channels = 40
+    # One high-volume state A gets 1000 journeys; the rest get 1 each.
+    rows = [("A", 1000, 1000)] + [(f"C{i}", 1, 1) for i in range(n_channels)]
+    df = pd.DataFrame(
+        {
+            "path": [r[0] for r in rows],
+            "conversions": [r[1] for r in rows],
+            "nulls": [r[2] for r in rows],
+            "net_margin": [float(r[1]) for r in rows],
+        }
+    )
+    eng = MarkovJourneyEngine(df, k=1)
+    assert len(eng.transient_states) == n_channels + 1 + 1  # A + C's + Start
+
+    outgoing_counts = {s: 0.0 for s in eng.transient_states}
+    for frm, to, w in eng.transition_counts:
+        if frm in outgoing_counts:
+            outgoing_counts[frm] += w
+
+    # A should dominate outgoing traffic.
+    assert outgoing_counts["A"] > outgoing_counts["C0"]
+    ranked = sorted(outgoing_counts.items(), key=lambda kv: kv[1], reverse=True)
+    sel_states = [s for s, _ in ranked[:MAX_DISPLAY_STATES]]
+    assert "A" in sel_states
+    assert len(sel_states) == MAX_DISPLAY_STATES
+
+
+def test_what_if_failure_renders_unavailable_state():
+    """A forced solver failure in What-if must not crash or fabricate zero metrics."""
+    try:
+        from streamlit.testing.v1 import AppTest
+    except ImportError:
+        pytest.skip("streamlit.testing not available")
+
+    import app as app_module
+
+    original = app_module.MarkovJourneyEngine.solve_prob
+
+    def _raise_on_multi_drop(self, weight_col="conversions", drop=None):
+        # Only fail when multiple channels are dropped simultaneously. The cached
+        # main analysis (compute_attribution_cached) drops one channel at a time,
+        # so it keeps working; the What-if section drops the user selection which
+        # may contain several channels.
+        if drop is not None and len(drop) > 1:
+            raise ValueError("forced non-absorbing chain")
+        return original(self, weight_col=weight_col, drop=drop)
+
+    app_module.MarkovJourneyEngine.solve_prob = _raise_on_multi_drop
+
+    app_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
+    at = AppTest.from_file(app_path).run(timeout=60)
+    assert len(at.exception) == 0, f"Initial app run raised: {at.exception}"
+
+    # Select two channels to drop, triggering the forced What-if failure.
+    ms_label = "Kapcsold ki a tesztelni kívánt csatornákat:"
+    ms = [e for e in at.multiselect._list if e.label == ms_label][0]
+    ms.set_value(list(ms.options[:2]))
+    at.run(timeout=60)
+
+    app_module.MarkovJourneyEngine.solve_prob = original
+
+    assert len(at.exception) == 0, f"App raised after multi-drop: {at.exception}"
+    # The What-if metric should show "Nem elérhető", not a formatted None or zero.
+    found = any(
+        "Nem elérhető" in str(el.value) for el in at.get("metric") if el.value is not None
+    )
+    assert found, "Expected 'Nem elérhető' metric on What-if failure"
+
+
+# --------------------------------------------------------------------------- #
+# Application-level smoke tests
+# --------------------------------------------------------------------------- #
     """A > B > C: Start plus one state per touchpoint, identical transitions across k."""
     df = pd.DataFrame(
         {

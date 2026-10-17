@@ -357,19 +357,25 @@ with tab2:
         state_pos = {s: i for i, s in enumerate(engine.transient_states)}
         # A teljes n_all x n_all mátrix derszeálása nagy állapottérnél
         # memoria-fogyasztó lehet (10 000 állapot -> ~800 MB), ezért csak egy
-        # korlátozott részhalmazt mutatunk a kimenő forgalom alapján.
+        # korlátozott részhalmazt mutatunk. A rangsorolás az előzetesen becsült
+        # átmenet-darabszámokon alapul (egyiquitést a Denkmalvádon bontjuk), nem a
+        # normalizált valószínűségeken, mert azok mindegyike 1.0-ra összegeződik.
+        outgoing_counts = {s: 0.0 for s in engine.transient_states}
+        for frm, to, w in engine.transition_counts:
+            if frm in outgoing_counts:
+                outgoing_counts[frm] += w
+
         if n_trans > MAX_DISPLAY_STATES:
-            total_out = (
-                np.asarray(engine.Q_conv.sum(axis=1)).flatten()
-                + np.asarray(engine.R_conv.sum(axis=1)).flatten()
-            )
-            order = np.argsort(total_out)[::-1]
-            sel_states = [engine.transient_states[i] for i in order[:MAX_DISPLAY_STATES]]
+            ranked = sorted(outgoing_counts.items(), key=lambda kv: kv[1], reverse=True)
+            sel_states = [s for s, _ in ranked[:MAX_DISPLAY_STATES]]
+            shown_total = sum(w for _, w in ranked[:MAX_DISPLAY_STATES])
+            all_total = sum(outgoing_counts.values())
             st.info(
                 f"A teljes állapottér ({n_trans} átmeneti állapot) túl nagy a pontos "
                 f"hőtérképhez; a {MAX_DISPLAY_STATES} legerősebb forgalomú állapotot "
-                "mutatjuk. A sorok nem lesznek 100%-osak, mert a nem megjelenített "
-                "állapotokra irányuló átmenetek kihagyásra kerültek."
+                f"mutatjuk ({shown_total:.0f} / {all_total:.0f} átmenet). A sorok nem "
+                "lesznek 100%-osak, mert a nem megjelenített állapotokra irányuló "
+                "átmenetek kihagyásra kerültek."
             )
         else:
             sel_states = engine.transient_states
@@ -428,32 +434,35 @@ with tab3:
         st.info("Válasszon másik csatornakombinációt.")
         sim_cvr = None
 
+    s_col1, s_col2, s_col3 = st.columns(3)
     if sim_cvr is None:
-        cvr_drop_pct = 0.0
-        lost_conversions = 0
-        lost_revenue = 0.0
+        s_col1.metric("Szimulált Konverziós Ráta", "Nem elérhető")
+        s_col1.caption("A szimuláció nem állítható elő az aktuális kombinációhoz.")
+        s_col2.metric("Becsült Konverzió-kiesés", "-")
+        s_col3.metric("Kockáztatott Bevétel (Removal Loss)", "-")
     else:
         cvr_drop_pct = (1.0 - (sim_cvr / base_cvr)) * 100 if base_cvr > 0 else 0.0
         lost_conversions = total_conv * (cvr_drop_pct / 100.0)
         lost_revenue = total_rev * (cvr_drop_pct / 100.0)
 
-    s_col1, s_col2, s_col3 = st.columns(3)
-    delta_label = f"{-cvr_drop_pct:.1f}%" if cvr_drop_pct > 0 else "0.0%"
-    s_col1.metric(
-        "Szimulált Konverziós Ráta",
-        f"{sim_cvr * 100:.2f}%",
-        delta_label,
-        delta_color="normal",
-    )
-    s_col1.caption(f"{int(round(lost_conversions)):,} konverzió veszteség".replace(",", " "))
-    s_col2.metric(
-        "Becsült Konverzió-kiesés",
-        f"{int(round(lost_conversions)):,} db".replace(",", " "),
-    )
-    s_col3.metric(
-        "Kockáztatott Bevétel (Removal Loss)",
-        f"{int(round(lost_revenue)):,} Ft".replace(",", " "),
-    )
+        delta_label = f"{-cvr_drop_pct:.1f}%" if cvr_drop_pct > 0 else "0.0%"
+        s_col1.metric(
+            "Szimulált Konverziós Ráta",
+            f"{sim_cvr * 100:.2f}%",
+            delta_label,
+            delta_color="normal",
+        )
+        s_col1.caption(
+            f"{int(round(lost_conversions)):,} konverzió veszteség".replace(",", " ")
+        )
+        s_col2.metric(
+            "Becsült Konverzió-kiesés",
+            f"{int(round(lost_conversions)):,} db".replace(",", " "),
+        )
+        s_col3.metric(
+            "Kockáztatott Bevétel (Removal Loss)",
+            f"{int(round(lost_revenue)):,} Ft".replace(",", " "),
+        )
 
     st.divider()
 
