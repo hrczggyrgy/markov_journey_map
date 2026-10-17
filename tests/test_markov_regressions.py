@@ -518,7 +518,8 @@ def test_demo_revenue_reconciles_with_generator():
                 }
             )
     gen_df = pd.DataFrame(rows)
-    assert int(gen_df["revenue"].sum()) == intended_rev == 101_192_500
+    # Revenue reconciles with the aggregate input table (incl. return journeys).
+    assert int(gen_df["revenue"].sum()) == intended_rev
     # Every converting row gets exactly its AOV, not the aggregate total.
     conv_rows = gen_df[gen_df["conversions"] == 1]
     for _, row in conv_rows.iterrows():
@@ -544,7 +545,7 @@ def test_actual_generator_output_reconciles(tmp_path):
     import duckdb
 
     j = duckdb.execute(
-        "SELECT path_id, conversions, revenue, net_margin FROM read_parquet(?)",
+        "SELECT path_id, path, conversions, revenue, net_margin FROM read_parquet(?)",
         [str(tmp_path / "customer_journeys.parquet")],
     ).df()
     b = duckdb.execute(
@@ -552,24 +553,63 @@ def test_actual_generator_output_reconciles(tmp_path):
         [str(tmp_path / "transaction_baskets_mba.parquet")],
     ).df()
 
-    conv_ids = set(j.loc[j["conversions"] == 1, "path_id"])
+    # Aggregate base table matching the generator (incl. return/zero-margin rows).
+    base = [
+        ("Social_Ads > Blog > Search_NonBrand > Email", "Új vásárlók", 140, 420, 24000, 1.0),
+        ("Social_Ads > Search_NonBrand > Search_Brand", "Új vásárlók", 190, 510, 26500, 1.0),
+        ("Social_Ads > Blog", "Új vásárlók", 15, 890, 18000, 1.0),
+        ("Social_Ads", "Új vásárlók", 20, 1450, 15000, 1.0),
+        ("Display_Ads > Social_Ads > Search_NonBrand > Retargeting", "Új vásárlók", 95, 380, 29000, 1.0),
+        ("Display_Ads", "Új vásárlók", 5, 1100, 14000, 1.0),
+        ("Search_NonBrand > Blog > Email > Search_Brand", "Potenciális hűségesek", 210, 310, 34000, 1.0),
+        ("Search_NonBrand > Retargeting > Search_Brand", "Potenciális hűségesek", 175, 290, 31000, 1.0),
+        ("Search_NonBrand", "Potenciális hűségesek", 45, 720, 22000, 1.0),
+        ("Email > Search_Brand", "VIP (Champions)", 420, 180, 52000, 1.0),
+        ("Search_Brand > Email", "VIP (Champions)", 310, 120, 48000, 1.0),
+        ("Email", "VIP (Champions)", 260, 240, 45000, 1.0),
+        ("Search_Brand", "VIP (Champions)", 290, 190, 49000, 1.0),
+        ("Retargeting > Email > Search_Brand", "Lemorzsolódó (At Risk)", 130, 410, 36000, 1.0),
+        ("Social_Ads > Retargeting > Email", "Lemorzsolódó (At Risk)", 85, 520, 27500, 1.0),
+        ("Retargeting", "Lemorzsolódó (At Risk)", 30, 640, 25000, 1.0),
+        ("Blog > Search_NonBrand > Email", "Potenciális hűségesek", 110, 280, 33000, 1.0),
+        ("Display_Ads > Blog > Retargeting", "Lemorzsolódó (At Risk)", 65, 490, 28000, 1.0),
+        ("Email > Search_Brand", "VIP (Champions)", 3, 2, 52000, -1.0),
+        ("Search_Brand", "VIP (Champions)", 2, 1, 49000, -1.0),
+        ("Blog > Search_NonBrand > Email", "Potenciális hűségesek", 5, 5, 33000, 0.0),
+    ]
+    # Expected revenue / margin from the aggregate base table (incl. return journeys).
+    intended_rev = sum(conv * aov for _, _, conv, _, aov, _ in base)
+    intended_margin = sum(
+        conv * aov * 0.30 * mm for _, _, conv, _, aov, mm in base
+    )
     # Revenue reconciles with aggregate base table.
-    assert abs(float(j["revenue"].sum()) - 101_192_500.0) < 1.0
-    # Margin reconciles: 30% of revenue.
-    assert abs(float(j["net_margin"].sum()) - 30_357_750.0) < 1.0
+    assert abs(float(j["revenue"].sum()) - intended_rev) < 1.0
+    # Margin reconciles with margin_multiplier per row.
+    assert abs(float(j["net_margin"].sum()) - intended_margin) < 1.0
     # Every basket references a converting journey.
+    conv_ids = set(j.loc[j["conversions"] == 1, "path_id"])
     assert set(b["path_id"]) <= conv_ids
     # No duplicate basket keys (one basket per journey).
     assert b["path_id"].is_unique
     # Journey IDs are unique.
     assert j["path_id"].is_unique
-    # Every converting row gets margin = 30% of its revenue, not aggregate.
+    # Every converting row gets margin = margin_multiplier * 30% of its revenue.
     conv_rows = j[j["conversions"] == 1]
     for _, row in conv_rows.iterrows():
-        assert abs(row["net_margin"] - row["revenue"] * 0.30) < 1e-6, f"{row['path_id']}"
+        expected_margins = [
+            br[4] * 0.30 * br[5] for br in base if br[0] == row["path"]
+        ]
+        assert any(
+            abs(row["net_margin"] - em) < 1e-6 for em in expected_margins
+        ), f"{row['path_id']}: {row['net_margin']} not in {expected_margins}"
     non_conv = j[j["conversions"] == 0]
     assert (non_conv["net_margin"] == 0.0).all()
     assert (non_conv["revenue"] == 0.0).all()
+    # Some converting journeys have no basket (unmatched > 0) so the MBA page
+    # can exercise the unmatched-journey path.
+    n_converted = int(conv_rows.shape[0])
+    assert len(b) < n_converted
+    assert n_converted - len(b) > 0
 
 
 # --------------------------------------------------------------------------- #
