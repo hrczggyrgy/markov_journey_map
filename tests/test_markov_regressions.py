@@ -553,30 +553,8 @@ def test_actual_generator_output_reconciles(tmp_path):
         [str(tmp_path / "transaction_baskets_mba.parquet")],
     ).df()
 
-    # Aggregate base table matching the generator (incl. return/zero-margin rows).
-    base = [
-        ("Social_Ads > Blog > Search_NonBrand > Email", "Új vásárlók", 140, 420, 24000, 1.0),
-        ("Social_Ads > Search_NonBrand > Search_Brand", "Új vásárlók", 190, 510, 26500, 1.0),
-        ("Social_Ads > Blog", "Új vásárlók", 15, 890, 18000, 1.0),
-        ("Social_Ads", "Új vásárlók", 20, 1450, 15000, 1.0),
-        ("Display_Ads > Social_Ads > Search_NonBrand > Retargeting", "Új vásárlók", 95, 380, 29000, 1.0),
-        ("Display_Ads", "Új vásárlók", 5, 1100, 14000, 1.0),
-        ("Search_NonBrand > Blog > Email > Search_Brand", "Potenciális hűségesek", 210, 310, 34000, 1.0),
-        ("Search_NonBrand > Retargeting > Search_Brand", "Potenciális hűségesek", 175, 290, 31000, 1.0),
-        ("Search_NonBrand", "Potenciális hűségesek", 45, 720, 22000, 1.0),
-        ("Email > Search_Brand", "VIP (Champions)", 420, 180, 52000, 1.0),
-        ("Search_Brand > Email", "VIP (Champions)", 310, 120, 48000, 1.0),
-        ("Email", "VIP (Champions)", 260, 240, 45000, 1.0),
-        ("Search_Brand", "VIP (Champions)", 290, 190, 49000, 1.0),
-        ("Retargeting > Email > Search_Brand", "Lemorzsolódó (At Risk)", 130, 410, 36000, 1.0),
-        ("Social_Ads > Retargeting > Email", "Lemorzsolódó (At Risk)", 85, 520, 27500, 1.0),
-        ("Retargeting", "Lemorzsolódó (At Risk)", 30, 640, 25000, 1.0),
-        ("Blog > Search_NonBrand > Email", "Potenciális hűségesek", 110, 280, 33000, 1.0),
-        ("Display_Ads > Blog > Retargeting", "Lemorzsolódó (At Risk)", 65, 490, 28000, 1.0),
-        ("Email > Search_Brand", "VIP (Champions)", 3, 2, 52000, -1.0),
-        ("Search_Brand", "VIP (Champions)", 2, 1, 49000, -1.0),
-        ("Blog > Search_NonBrand > Email", "Potenciális hűségesek", 5, 5, 33000, 0.0),
-    ]
+    # Import the generator's base table so the test always matches the data.
+    base = gen.BASE_JOURNEYS
     # Expected revenue / margin from the aggregate base table (incl. return journeys).
     intended_rev = sum(conv * aov for _, _, conv, _, aov, _ in base)
     intended_margin = sum(
