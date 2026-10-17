@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import duckdb
 
+from core.markov_engine import validate_journey_row, START, CONVERSION, NULL_STATE
+
 
 def load_aggregated_edges(
     parquet_path: str,
@@ -94,7 +96,6 @@ def load_csv_journeys(
     # Érvényességi ellenőrzések ELSŐSORban, a string konverzió elött:
     # - hiányzó útvonal (NaN) nem láthatóaként "nan" csatorná váljon
     # - üres vagy szeparátoros csakból álló útvonal nem jelent semmit
-    # - konverziós/kilépési számok végleges, nem negatív, nem negatív
     path_str = df["path"].astype(str)
 
     def _has_meaningful_path(p) -> bool:
@@ -140,17 +141,45 @@ def load_csv_journeys(
 
     df["revenue"] = pd.to_numeric(df["revenue"], errors="coerce").astype(float)
     df["net_margin"] = pd.to_numeric(df["net_margin"], errors="coerce").astype(float)
-    # Pénzügyi értékek véglegességének ellenőrzése: NaN vagy végtelen érték nem
-    # elfogadható, de a negatív pénzügyi összeg (pl. visszafizetés) engedélyezett.
+    # Közös validációs szerződés: counts és margin ugyanazon szabályokkal
+    # ellenőrizhetők a CSV betöltőben és a közvetlen engine használatnál is.
+    for idx, row in df.iterrows():
+        validate_journey_row(
+            str(row["path"]),
+            float(row["conversions"]),
+            float(row["nulls"]),
+            float(row["net_margin"]),
+            float(row["revenue"]),
+        )
+
+    # Pénzügyi véglegesség: NaN vagy végtelen érték nem elfogadható, de a
+    # negatív pénzügyi összeg (pl. visszafizetés) engedélyezett.
     rev_bad = df["revenue"].isna() | ~np.isfinite(df["revenue"])
-    mar_bad = df["net_margin"].isna() | ~np.isfinite(df["net_margin"])
-    if rev_bad.any() or mar_bad.any():
-        bad_idx = df.index[rev_bad | mar_bad].tolist()
+    if rev_bad.any():
+        bad_idx = df.index[rev_bad].tolist()
         raise ValueError(
             "Érvénytelen pénzügyi érték a következő sorokban: "
             + ", ".join(map(str, bad_idx[:10]))
         )
+
+    # Csatornanev-korlátok ellenőrzése MINDENFELEJÉTT, mielőtt a sikeres betöltést
+    # jelennénk meg: a k-rendű állapotnevek "__"-del fűznek össze, és a csatorna
+    # eltávolítás "__"-fel történt felbontásra épül. A Motor később kizáróan
+    # hibával reagálna; itt már használható üzenettel állunk le.
     df["path"] = df["path"].astype(str)
     df["rfm_segment"] = df["rfm_segment"].astype(str)
+    reserved = {START, CONVERSION, NULL_STATE}
+    all_channels: set[str] = set()
+    for steps in df["path"].str.split(">"):
+        all_channels.update(ch.strip() for ch in steps if ch.strip())
+    bad_channels = [ch for ch in all_channels if "__" in ch or ch in reserved]
+    if bad_channels:
+        raise ValueError(
+            "Érvénytelen csatornánév: "
+            + ", ".join(repr(ch) for ch in bad_channels)
+            + ". A csatornánév nem tartalmazhat '__'-karaktereket és nem lehet "
+            "egyenlő a fenntartott állaponevekkel: "
+            + ", ".join(repr(s) for s in sorted(reserved))
+        )
 
     return df

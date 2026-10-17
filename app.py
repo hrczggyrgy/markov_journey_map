@@ -155,9 +155,37 @@ def compute_attribution_cached(filtered_df, k_order, collapse_loops):
     transition_counts = engine.transition_counts
     return base_cvr, base_margin, attr_df, transition_counts, engine.all_states, engine
 
-base_cvr, base_margin, attr_df, edge_counts, all_states, engine = compute_attribution_cached(
-    filtered_df, k_order, collapse_loops
-)
+# Engine validation failures (e.g. prohibited channel names) must surface as a
+# user-visible message, not an uncaught application error.
+engine_error = None
+try:
+    base_cvr, base_margin, attr_df, edge_counts, all_states, engine = compute_attribution_cached(
+        filtered_df, k_order, collapse_loops
+    )
+except (ValueError, ZeroDivisionError) as exc:
+    engine_error = exc
+    base_cvr = 0.0
+    base_margin = 0.0
+    attr_df = pd.DataFrame(
+        columns=[
+            "Csatorna",
+            "Volume_RE",
+            "Margin_RE",
+            "Volume_RE_pct",
+            "Margin_RE_pct",
+        ]
+    )
+    edge_counts = []
+    all_states = []
+    engine = None
+
+if engine is None:
+    st.error(f"Adatfeldolgozási hiba: {engine_error}")
+    st.info(
+        "Ellenőrizze a feltöltött fájl tartalmát (érvénytelen csatornánév, "
+        "negatív vagy nem végtelen szám), vagy válasszon más adatforrást."
+    )
+    st.stop()
 
 # Összesített metrikák KPI-khoz
 total_conv = int(filtered_df["conversions"].sum())
@@ -194,6 +222,11 @@ col4.metric(
 )
 
 st.divider()
+
+# -----------------------------------------------------------------------------
+# Konfigurációs korlátok (bemeneti méret és teljesítmény)
+# -----------------------------------------------------------------------------
+MAX_DISPLAY_STATES = 30  # A hőtérképben megjelenített átmeneti állapotok maximális száma.
 
 # -----------------------------------------------------------------------------
 # FÜLEK
@@ -236,9 +269,10 @@ with tab1:
             color="Mérés",
             barmode="group",
             text_auto=".1f",
-            color_discrete_sequence=["#2563EB", "#10B981"],
+            color_discrete_sequence=["#2563EB", "#64748B"],
             height=460,
         )
+        fig_bar.add_hline(y=0, line_width=1, line_dash="dash", line_color="#94A3B8")
         fig_bar.update_layout(
             legend_title_text="Mérési mód", xaxis_title="", yaxis_title="Removal Effect (%)"
         )
@@ -252,14 +286,25 @@ with tab1:
             "Markov Konverziók",
             "Markov Bevétel (Ft)",
         ]
+        def _fmt_pct(v):
+            if pd.isna(v):
+                return "N/A"
+            return f"{v:.2f}%"
+
         st.dataframe(
             attr_df[show_cols].style.format({
-                "Volume_RE_pct": "{:.2f}%",
-                "Margin_RE_pct": "{:.2f}%",
+                "Volume_RE_pct": _fmt_pct,
+                "Margin_RE_pct": _fmt_pct,
                 "Markov Konverziók": "{:.1f}",
                 "Markov Bevétel (Ft)": "{:,.0f} Ft",
             }),
             use_container_width=True,
+        )
+        st.caption(
+            "A negatív Margin_RE azt jelenti, hogy a csatorna eltávolítása javítaná a "
+            "várható nettó fedezetet (vesztető csatorna). A 'N/A' érték azt jelenti, "
+            "hogy az alap nettó fedezet nem pozitív, ezért a százalékos fedezet-"
+            "kiesés nincs jelentésben."
         )
 
 # =============================================================================
@@ -309,20 +354,46 @@ with tab2:
     with col_heat:
         st.subheader("Átmeneti Valószínűségi Mátrix ($P_{ij}$)")
         n_trans = engine.n_trans
-        n_all = len(engine.all_states)
-        P_dense = np.zeros((n_all, n_all))
-        if engine.Q_conv is not None:
-            Q_arr = engine.Q_conv.toarray()
-            R_arr = engine.R_conv.toarray()
-            P_dense[:n_trans, :n_trans] = Q_arr
-            P_dense[:n_trans, n_trans:] = R_arr
-        for abs_state in engine.absorbing_states:
-            idx = state_idx[abs_state]
-            P_dense[idx, idx] = 1.0
+        state_pos = {s: i for i, s in enumerate(engine.transient_states)}
+        # A teljes n_all x n_all mátrix derszeálása nagy állapottérnél
+        # memoria-fogyasztó lehet (10 000 állapot -> ~800 MB), ezért csak egy
+        # korlátozott részhalmazt mutatunk a kimenő forgalom alapján.
+        if n_trans > MAX_DISPLAY_STATES:
+            total_out = (
+                np.asarray(engine.Q_conv.sum(axis=1)).flatten()
+                + np.asarray(engine.R_conv.sum(axis=1)).flatten()
+            )
+            order = np.argsort(total_out)[::-1]
+            sel_states = [engine.transient_states[i] for i in order[:MAX_DISPLAY_STATES]]
+            st.info(
+                f"A teljes állapottér ({n_trans} átmeneti állapot) túl nagy a pontos "
+                f"hőtérképhez; a {MAX_DISPLAY_STATES} legerősebb forgalomú állapotot "
+                "mutatjuk. A sorok nem lesznek 100%-osak, mert a nem megjelenített "
+                "állapotokra irányuló átmenetek kihagyásra kerültek."
+            )
+        else:
+            sel_states = engine.transient_states
+
+        display_states = sel_states + [CONVERSION, NULL_STATE]
+        n_disp = len(display_states)
+        P_disp = np.zeros((n_disp, n_disp))
+        conv_col = n_disp - 2
+        null_col = n_disp - 1
+        for i, frm in enumerate(sel_states):
+            ii = state_pos[frm]
+            for j, to in enumerate(sel_states):
+                jj = state_pos[to]
+                P_disp[i, j] = float(engine.Q_conv[ii, jj])
+            P_disp[i, conv_col] = float(engine.R_conv[ii, 0])
+            P_disp[i, null_col] = float(engine.R_conv[ii, 1])
+        # Absorbing állapotok önmagakra mutassanak
+        P_disp[conv_col, conv_col] = 1.0
+        P_disp[null_col, null_col] = 1.0
+
         p_df = pd.DataFrame(
-            P_dense[:n_trans, :] * 100,
-            index=engine.transient_states,
-            columns=engine.all_states,
+            P_disp * 100,
+            index=sel_states + [CONVERSION, NULL_STATE],
+            columns=display_states,
         )
         fig_heat = px.imshow(
             p_df,
@@ -350,10 +421,21 @@ with tab3:
         default=[top_channel] if top_channel != "-" else [],
     )
 
-    sim_cvr = engine.solve_prob(weight_col="conversions", drop=disabled_channels)
-    cvr_drop_pct = (1.0 - (sim_cvr / base_cvr)) * 100 if base_cvr > 0 else 0.0
-    lost_conversions = total_conv * (cvr_drop_pct / 100.0)
-    lost_revenue = total_rev * (cvr_drop_pct / 100.0)
+    try:
+        sim_cvr = engine.solve_prob(weight_col="conversions", drop=disabled_channels)
+    except ValueError as exc:
+        st.error(f"What-if szimulációs hiba: {exc}")
+        st.info("Válasszon másik csatornakombinációt.")
+        sim_cvr = None
+
+    if sim_cvr is None:
+        cvr_drop_pct = 0.0
+        lost_conversions = 0
+        lost_revenue = 0.0
+    else:
+        cvr_drop_pct = (1.0 - (sim_cvr / base_cvr)) * 100 if base_cvr > 0 else 0.0
+        lost_conversions = total_conv * (cvr_drop_pct / 100.0)
+        lost_revenue = total_rev * (cvr_drop_pct / 100.0)
 
     s_col1, s_col2, s_col3 = st.columns(3)
     delta_label = f"{-cvr_drop_pct:.1f}%" if cvr_drop_pct > 0 else "0.0%"

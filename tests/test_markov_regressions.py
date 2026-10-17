@@ -149,7 +149,21 @@ def test_csv_loader_rejects_infinite_revenue(tmp_path):
 def test_csv_loader_rejects_infinite_margin(tmp_path):
     p = tmp_path / "inf_mar.csv"
     p.write_text("path,conversions,nulls,revenue,net_margin\nA>B,1,1,100,inf\n")
-    with pytest.raises(ValueError, match="Érvénytelen pénzügyi érték"):
+    with pytest.raises(ValueError, match="Ervenytelen"):
+        load_csv_journeys(str(p))
+
+
+def test_csv_loader_rejects_channel_name_with_delimiter(tmp_path):
+    p = tmp_path / "bad_channel.csv"
+    p.write_text("path,conversions,nulls\nA__B > C,5,5\nC,5,5\n")
+    with pytest.raises(ValueError, match="Érvénytelen csatornánév"):
+        load_csv_journeys(str(p))
+
+
+def test_csv_loader_rejects_zero_volume_with_money(tmp_path):
+    p = tmp_path / "zero_vol.csv"
+    p.write_text("path,conversions,nulls,revenue,net_margin\nA,1,0,100,30\nB,0,0,1000,300\n")
+    with pytest.raises(ValueError, match="Null volumen"):
         load_csv_journeys(str(p))
 
 
@@ -222,6 +236,47 @@ def test_signed_margin_effect_preserved():
     assert attr.loc["A", "Margin_RE"] > 0
     # Nothing is clipped to zero.
     assert attr.loc["B", "Margin_RE"] != 0.0
+
+
+def test_nonpositive_baseline_margin_unavailable():
+    """When baseline margin is nonpositive, percentage margin attribution is NaN."""
+    df = pd.DataFrame(
+        {
+            "path": ["A", "B"],
+            "conversions": [1, 1],
+            "nulls": [0, 0],
+            "net_margin": [-50.0, -30.0],
+        }
+    )
+    eng = MarkovJourneyEngine(df, k=1)
+    attr = eng.compute_attribution().set_index("Csatorna")
+    assert eng.solve_prob(weight_col="net_margin") <= 0
+    assert pd.isna(attr.loc["A", "Margin_RE"])
+    assert pd.isna(attr.loc["B", "Margin_RE"])
+    assert pd.isna(attr.loc["A", "Margin_RE_pct"])
+
+
+def test_engine_scales_to_many_channels():
+    """Engine must build without memory blow-up for more states than MAX_DISPLAY_STATES."""
+    n_channels = 50
+    df = pd.DataFrame(
+        {
+            "path": [f"C{i}" for i in range(n_channels)],
+            "conversions": [1] * n_channels,
+            "nulls": [1] * n_channels,
+            "net_margin": [float(100 + i) for i in range(n_channels)],
+        }
+    )
+    eng = MarkovJourneyEngine(df, k=1)
+    assert len(eng.channels) == n_channels
+    assert len(eng.transient_states) == n_channels + 1  # + Start
+    # Attribution and transition counts must complete.
+    assert not eng.compute_attribution().empty
+    counts = eng.transition_counts
+    assert len(counts) == 3 * n_channels  # Start->Ci, Ci->Conversion, Ci->Null
+    # No absorbing self-loops exposed.
+    loops = [(f, t) for (f, t, w) in counts if f == t and f in (CONVERSION, NULL_STATE)]
+    assert loops == []
 
 
 def test_deterministic_steps_exact_values():

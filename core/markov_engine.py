@@ -26,7 +26,13 @@ CONVERSION = "(Conversion)"
 NULL_STATE = "(Null)"
 
 
-def validate_journey_row(path: str, conversions: float, nulls: float, net_margin: float) -> None:
+def validate_journey_row(
+    path: str,
+    conversions: float,
+    nulls: float,
+    net_margin: float,
+    revenue: float | None = None,
+) -> None:
     """Ellenőrzi egy journey sort a modell szerződése szerint.
 
     A CSV betöltő és a motor határlapja együttes ellenőrzést végeznek, így a
@@ -41,6 +47,16 @@ def validate_journey_row(path: str, conversions: float, nulls: float, net_margin
         raise ValueError(
             f"Ervenytelen vegetlen penzugyi ertek az utvonalon {path!r}: "
             f"net_margin={net_margin!r}"
+        )
+    # Null volumen sor (conversions=0, nulls=0) nem Represental journey-t, de
+    # a KPI-osszegek nevertheless belefoglalhatnak belole penget. Egyertelmu
+    # szerzodu: null volumennel nem szerezheto be penzugyi ertek.
+    total = conversions + nulls
+    if total <= 0 and revenue is not None and (revenue != 0.0 or net_margin != 0.0):
+        raise ValueError(
+            f"Null volumen journey '{path}' tartalmaz penzugyi erteket: "
+            f"revenue={revenue!r}, net_margin={net_margin!r}. Null volumennel "
+            "nem szerezheto be bevitel vagy fedezet."
         )
 
 
@@ -195,11 +211,12 @@ class MarkovJourneyEngine:
             nulls = float(row.get("nulls", 0) or 0)
             # net_margin egy soron aggregated fedezet-osszeg a konverziorol.
             margin_dollars = float(row.get("net_margin", 0.0) or 0.0)
+            revenue = float(row.get("revenue", 0.0) or 0.0)
 
             # Shared validation contract: the CSV loader and the direct API
             # usage perform the same checks. Invalid rows raise an exception
             # here instead of being silently skipped or coerced to zero.
-            validate_journey_row(str(path_val), conv, nulls, margin_dollars)
+            validate_journey_row(str(path_val), conv, nulls, margin_dollars, revenue)
 
             total = conv + nulls
             if total <= 0:
@@ -358,8 +375,8 @@ class MarkovJourneyEngine:
             return _validate(x, "spsolve")
         except spla.MatrixRankWarning:
             pass  # singular matrix: iterative fallback
-        except Exception:
-            pass  # other numerical failure: iterative fallback
+        except (ValueError, RuntimeError, ArithmeticError):
+            pass  # anticipated numerical failure: iterative fallback
 
         # 2. Iteratív legkisebb négyszögek convergencia- és residuális-ellenőrzéssel.
         result = spla.lsqr(A, b, atol=1e-10, btol=1e-10)
