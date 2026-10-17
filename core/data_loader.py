@@ -3,6 +3,7 @@ without memory overflow."""
 
 from __future__ import annotations
 
+import json
 import numpy as np
 import pandas as pd
 import duckdb
@@ -189,3 +190,160 @@ def load_csv_journeys(
         )
 
     return df
+
+
+def load_ga4_journeys(
+    file,
+    default_revenue_per_conversion: float = 25000.0,
+    default_margin_rate: float = 0.30,
+    default_segment: str = "All customers",
+) -> pd.DataFrame:
+    """
+    Load a Google Analytics 4 (GA4) BigQuery export CSV and build journey data.
+
+    GA4 export columns (expected): event_date, event_timestamp, event_name,
+    user_pseudo_id, session_id, page_location, page_referrer, source, medium,
+    campaign, event_params (JSON), items (JSON).
+
+    Builds per-user journeys ordered by event_timestamp, marks purchase events
+    as conversions, and aggregates to path-level counts/money.
+
+    Returns a DataFrame with columns: path, conversions, nulls, revenue,
+    net_margin, rfm_segment — ready for MarkovJourneyEngine.
+    """
+    df = pd.read_csv(file)
+    df.columns = [c.strip().lower() for c in df.columns]
+
+    required = ["event_name", "user_pseudo_id", "event_timestamp"]
+    missing = [c for c in required if c not in df.columns]
+    if missing:
+        raise ValueError(
+            "GA4 export missing required columns: " + ", ".join(missing)
+        )
+
+    def _extract_param(event_params_str, key):
+        """Extract a param value from GA4 event_params JSON array."""
+        if pd.isna(event_params_str):
+            return None
+        try:
+            params = json.loads(event_params_str)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if not isinstance(params, list):
+            return None
+        for param in params:
+            if isinstance(param, dict) and param.get("key") == key:
+                val = param.get("value", {})
+                if isinstance(val, dict):
+                    return (
+                        val.get("string_value")
+                        or val.get("int_value")
+                        or val.get("double_value")
+                    )
+                return val
+        return None
+
+    # Source/medium: from columns or event_params JSON
+    if "source" not in df.columns:
+        df["source"] = df["event_params"].apply(
+            lambda x: _extract_param(x, "source")
+        )
+    if "medium" not in df.columns:
+        df["medium"] = df["event_params"].apply(
+            lambda x: _extract_param(x, "medium")
+        )
+
+    # Replace empty strings with NaN, then fillna
+    df["source"] = df["source"].replace("", pd.NA).fillna("(direct)").astype(str)
+    df["medium"] = df["medium"].replace("", pd.NA).fillna("(none)").astype(str)
+    df["channel"] = df["source"] + " / " + df["medium"]
+
+    # Page location (not used in path building, but kept for completeness)
+    if "page_location" not in df.columns:
+        df["page_location"] = df["event_params"].apply(
+            lambda x: _extract_param(x, "page_location")
+        )
+
+    # Event value: GA4 stores in micros (1/1,000,000 of currency unit)
+    if "value" not in df.columns:
+        df["event_value"] = df["event_params"].apply(
+            lambda x: _extract_param(x, "value")
+        )
+        df["event_value"] = pd.to_numeric(df["event_value"], errors="coerce")
+    else:
+        df["event_value"] = pd.to_numeric(df["event_value"], errors="coerce")
+    df["event_value"] = df["event_value"].fillna(0.0)
+
+    # Identify conversion events (purchase)
+    df["is_conversion"] = df["event_name"].eq("purchase")
+
+    # Sort by user and timestamp to build journeys
+    df["event_timestamp"] = pd.to_numeric(df["event_timestamp"], errors="coerce")
+    df = df.sort_values(["user_pseudo_id", "event_timestamp"])
+
+    # Build one journey row per user
+    journey_rows = []
+    for _user_id, group in df.groupby("user_pseudo_id", sort=False):
+        steps = []
+        revenue = 0.0
+        is_conv = False
+        for _, row in group.iterrows():
+            channel = str(row["channel"]).strip()
+            if channel:
+                steps.append(channel)
+            if row["is_conversion"]:
+                is_conv = True
+                revenue += float(row["event_value"])
+
+        path = " > ".join(steps)
+        if not path:
+            continue  # skip users with no channel info
+
+        if is_conv:
+            conversions = 1
+            nulls = 0
+        else:
+            conversions = 0
+            nulls = 1
+
+        journey_rows.append(
+            {
+                "path": path,
+                "conversions": conversions,
+                "nulls": nulls,
+                "revenue": revenue if is_conv else 0.0,
+                "net_margin": (revenue * default_margin_rate) if is_conv else 0.0,
+                "rfm_segment": default_segment,
+            }
+        )
+
+    if not journey_rows:
+        raise ValueError("No usable journeys found in GA4 export.")
+
+    journeys_df = pd.DataFrame(journey_rows)
+
+    # Aggregate by path string
+    agg = (
+        journeys_df.groupby("path")
+        .agg(
+            conversions=("conversions", "sum"),
+            nulls=("nulls", "sum"),
+            revenue=("revenue", "sum"),
+            net_margin=("net_margin", "sum"),
+            rfm_segment=("rfm_segment", "first"),
+        )
+        .reset_index()
+    )
+
+    # Validate through the shared contract
+    for _, row in agg.iterrows():
+        validate_journey_row(
+            str(row["path"]),
+            float(row["conversions"]),
+            float(row["nulls"]),
+            float(row["net_margin"]),
+            float(row["revenue"]),
+        )
+
+    return agg
+

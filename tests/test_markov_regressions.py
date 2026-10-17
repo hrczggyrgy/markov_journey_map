@@ -11,6 +11,8 @@ from __future__ import annotations
 import os
 import sys
 
+import csv
+import json
 import numpy as np
 import pandas as pd
 import pytest
@@ -25,7 +27,7 @@ from core.markov_engine import (
     CONVERSION,
     NULL_STATE,
 )
-from core.data_loader import load_csv_journeys
+from core.data_loader import load_csv_journeys, load_ga4_journeys
 from core.bridge_connectors import enrich_journeys_with_mba_rules
 
 
@@ -165,6 +167,45 @@ def test_csv_loader_rejects_zero_volume_with_money(tmp_path):
     p.write_text("path,conversions,nulls,revenue,net_margin\nA,1,0,100,30\nB,0,0,1000,300\n")
     with pytest.raises(ValueError, match="Zero-volume"):
         load_csv_journeys(str(p))
+
+
+def test_ga4_loader_builds_journeys(tmp_path):
+    """GA4 export builds per-user journeys with conversions counted correctly."""
+    import csv
+    import json
+
+    p = tmp_path / "ga4.csv"
+    rows = [
+        ["event_date","event_timestamp","event_name","user_pseudo_id","session_id","page_location","page_referrer","source","medium","campaign","event_params","items"],
+        ["20260101",1000,"session_start","user_1",100,"","","","","","[]","[]"],
+        ["20260101",2000,"page_view","user_1",100,"/home","","google","organic","",json.dumps([{"key":"source","value":{"string_value":"google"}},{"key":"medium","value":{"string_value":"organic"}}]),"[]"],
+        ["20260101",3000,"purchase","user_1",100,"/checkout","","google","organic","",json.dumps([{"key":"source","value":{"string_value":"google"}},{"key":"medium","value":{"string_value":"organic"}},{"key":"value","value":{"double_value":100.0}}]),json.dumps([{"item_id":"sku1","price":100.0}])],
+        ["20260102",4000,"session_start","user_2",200,"","","","","","[]","[]"],
+        ["20260102",5000,"page_view","user_2",200,"/home","","facebook","cpc","",json.dumps([{"key":"source","value":{"string_value":"facebook"}},{"key":"medium","value":{"string_value":"cpc"}}]),"[]"],
+        ["20260102",6000,"page_view","user_2",200,"/product","","facebook","cpc","",json.dumps([{"key":"source","value":{"string_value":"facebook"}},{"key":"medium","value":{"string_value":"cpc"}}]),"[]"],
+    ]
+    with open(p, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerows(rows)
+
+    df = load_ga4_journeys(str(p))
+    assert len(df) == 2  # two users -> two journey paths
+    assert int(df["conversions"].sum()) == 1  # one purchase
+    assert int(df["nulls"].sum()) == 1  # one non-purchase
+    assert float(df["revenue"].sum()) == 100.0
+
+
+def test_ga4_loader_rejects_empty(tmp_path):
+    """GA4 export with no usable events raises an error."""
+    import csv
+
+    p = tmp_path / "ga4_empty.csv"
+    with open(p, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["event_date","event_timestamp","event_name","user_pseudo_id","session_id","page_location","page_referrer","source","medium","campaign","event_params","items"])
+
+    with pytest.raises(ValueError, match="No usable journeys"):
+        load_ga4_journeys(str(p))
 
 
 def test_csv_loader_accepts_valid_rows(tmp_path):

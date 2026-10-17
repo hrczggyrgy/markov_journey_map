@@ -17,6 +17,7 @@ from core.data_loader import (
     load_rfm_segments,
     load_mba_rules,
     load_csv_journeys,
+    load_ga4_journeys,
 )
 from core.bridge_connectors import (
     export_markov_priors_for_mmm,
@@ -87,7 +88,11 @@ with st.sidebar:
     st.header("Data Source & Filters")
     data_source = st.radio(
         "Choose data source:",
-        ["Built-in RFM + Journey demo data", "Upload custom CSV"],
+        [
+            "Built-in RFM + Journey demo data",
+            "Upload custom CSV",
+            "Upload GA4 export (BigQuery CSV)",
+        ],
     )
 
     effective_source = "demo"
@@ -112,6 +117,30 @@ with st.sidebar:
                 raw_df = generate_demo_data()
         else:
             st.warning("No CSV uploaded; the built-in demo data is shown.")
+            raw_df = generate_demo_data()
+    elif data_source == "Upload GA4 export (BigQuery CSV)":
+        st.info(
+            "Upload a GA4 BigQuery export CSV. Required columns: "
+            "`event_name`, `user_pseudo_id`, `event_timestamp`. "
+            "Optional: `source`, `medium`, `page_location`, `event_params` (JSON), "
+            "`items` (JSON). Journeys are built per user ordered by timestamp; "
+            "purchase events count as conversions."
+        )
+        uploaded_file = st.file_uploader("Select GA4 export CSV", type=["csv"])
+        if uploaded_file is not None:
+            try:
+                raw_df = load_ga4_journeys(uploaded_file)
+                effective_source = "GA4 export (BigQuery)"
+                st.success(
+                    f"GA4 export loaded: {len(raw_df)} journey paths, "
+                    f"{int(raw_df['conversions'].sum())} conversions."
+                )
+            except Exception as exc:
+                st.error(f"GA4 load error: {exc}")
+                st.info("The system fell back to the built-in demo data.")
+                raw_df = generate_demo_data()
+        else:
+            st.warning("No GA4 export uploaded; the built-in demo data is shown.")
             raw_df = generate_demo_data()
     else:
         raw_df = generate_demo_data()
