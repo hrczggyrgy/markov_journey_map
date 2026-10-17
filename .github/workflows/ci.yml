@@ -33,6 +33,11 @@ jobs:
       - name: Import smoke test
         run: python tests/smoke_import.py
 
+      - name: Undefined-name lint (ruff F821)
+        run: |
+          pip install ruff
+          ruff check app.py core pages scripts tests --select F821
+
       - name: Run regression tests
         run: |
           pip install pytest

@@ -26,6 +26,24 @@ CONVERSION = "(Conversion)"
 NULL_STATE = "(Null)"
 
 
+def validate_journey_row(path: str, conversions: float, nulls: float, net_margin: float) -> None:
+    """Ellenőrzi egy journey sort a modell szerződése szerint.
+
+    A CSV betöltő és a motor határlapja együttes ellenőrzést végeznek, így a
+    közvetlen API használat is megkapja a betöltő szigorúsát.
+    """
+    if not np.isfinite(conversions) or not np.isfinite(nulls) or conversions < 0 or nulls < 0:
+        raise ValueError(
+            "Ervenytelen konverzios/kilepesi szam az utvonalon "
+            f"{path!r}: conversions={conversions!r}, nulls={nulls!r}"
+        )
+    if not np.isfinite(net_margin):
+        raise ValueError(
+            f"Ervenytelen vegetlen penzugyi ertek az utvonalon {path!r}: "
+            f"net_margin={net_margin!r}"
+        )
+
+
 def clean_journey(raw_steps: list[str], collapse_loops: bool = True) -> list[str]:
     """Ötvözi az egymást közvetlenül követő duplikált csatornákat (Run-Length Encoding)."""
     if not collapse_loops or not raw_steps:
@@ -175,18 +193,17 @@ class MarkovJourneyEngine:
 
             conv = float(row.get("conversions", 0) or 0)
             nulls = float(row.get("nulls", 0) or 0)
-            # Konverziós/kilépési számoknak végleges, nem negatív értékeknek
-            # kell lenniük (sosem lehet negatív átmeneti valószínűség).
-            # Négatív pénzügyi értékek (net_margin) különlegesen kezelhetők,
-            # azok nem eredményeznek negatív átmenetet.
-            if not (np.isfinite(conv) and np.isfinite(nulls)) or conv < 0 or nulls < 0:
-                continue
+            # net_margin egy soron aggregated fedezet-osszeg a konverziorol.
+            margin_dollars = float(row.get("net_margin", 0.0) or 0.0)
+
+            # Shared validation contract: the CSV loader and the direct API
+            # usage perform the same checks. Invalid rows raise an exception
+            # here instead of being silently skipped or coerced to zero.
+            validate_journey_row(str(path_val), conv, nulls, margin_dollars)
+
             total = conv + nulls
             if total <= 0:
                 continue
-
-            # net_margin egy soron aggregated fedezet-osszeg a konverziorol.
-            margin_dollars = float(row.get("net_margin", 0.0) or 0.0)
 
             for ch in steps:
                 channels_set.add(ch)
@@ -203,7 +220,26 @@ class MarkovJourneyEngine:
 
         self.channels = sorted(channels_set)
 
-        # Állapottér: Start + minden intermédiaire állapot, amire egy élek hivatkozik.
+        # A k-rendű állapotnevek "__"-del fűznek össze a csatornaneveket, és a
+        # csatorna eltávolítás ("__"-fel felbontott állapotnevek között keresés)
+        # ezen függ. A bemeneti szerződés tiltja a "__"-et tartalmazó
+        # csatornaneveket és a fenntartott állapotineveket.
+        reserved = {START, CONVERSION, NULL_STATE}
+        bad_channels = [
+            ch
+            for ch in self.channels
+            if "__" in ch or ch in reserved
+        ]
+        if bad_channels:
+            raise ValueError(
+                "Érvénytelen csatornánév: "
+                + ", ".join(repr(ch) for ch in bad_channels)
+                + ". A csatornánév nem tartalmazhat '__'-karaktereket és nem lehet "
+                "egyenlő a fenntartott állaponevekkel: "
+                + ", ".join(repr(s) for s in sorted(reserved))
+            )
+
+        # Állapottér: Start + minden intermédiaires állapot, amire egy élek hivatkozik.
         referenced: set[str] = set(raw_frm) | set(raw_to)
         k_order_states = {s for s in referenced if s not in (CONVERSION, NULL_STATE, START)}
         self.transient_states = [START] + sorted(k_order_states)
@@ -287,12 +323,13 @@ class MarkovJourneyEngine:
     # y[j] = várható látogatásszám a j állapotra a Start-ból indulva.
     # ------------------------------------------------------------------ #
     def _solve_visit_system(self, A: sp.csr_matrix, b: np.ndarray) -> np.ndarray:
-        """Megoldja A x = b a rendszerrel, és érvényesíti a megoldást.
+        """Solve A x = b and validate the result.
 
-        Először közvetlen ritka megoldást próbál (szinguláris mátriz figyelmeztetés
-        hibaként), aztán iteratív legkisebb négyszögekkel egybecel convergencia és
-        residuális ellenőrzéssel. Ha a rendszer nem stabilizing, egy kontrollált
-        hibaüzenettel áll meg lugará_null helyett, hogy nullázatlan eredetet adna.
+        Tries a direct sparse solve first (treating a singular-matrix warning as
+        failure), then falls back to an iterative least-squares solve with
+        convergence and residual checks. Raises a controlled ValueError when the
+        system has no stable solution (e.g. a closed, non-absorbing state class)
+        instead of manufacturing a finite but wrong result.
         """
         b_norm = float(np.linalg.norm(b))
         tol = 1e-6 * max(b_norm, 1e-12)
@@ -301,18 +338,15 @@ class MarkovJourneyEngine:
             x = np.asarray(x).flatten()
             if not np.all(np.isfinite(x)):
                 raise ValueError(
-                    "Markov-lánc nem abszorbeert: "
-                    f"{source} eredménye nem végtelen (NaN vagy végtelen értéket "
-                    "tartalmaz)."
+                    f"Non-absorbing Markov chain: {source} produced a non-finite "
+                    "result for (I - Q^T) x = b."
                 )
             residual = float(np.linalg.norm(b - A @ x))
             if residual > tol:
                 raise ValueError(
-                    "Markov-lánc nem abszorbeert: "
-                    f"{source} residuálisa {residual:.3e} meghaladja a "
-                    f"toleranciát ({tol:.3e}). Ez akkor fordulhat elő, ha egy "
-                    "állapotkészlet záró hurokot épít, amelyről nem lehet "
-                    "konvertálni vagy kilépni."
+                    f"Non-absorbing Markov chain: {source} residual {residual:.3e} "
+                    f"exceeds tolerance {tol:.3e}. This can happen when a closed "
+                    "state class cannot reach conversion or exit."
                 )
             return x
 
@@ -336,10 +370,9 @@ class MarkovJourneyEngine:
         converged = istop == 1 and r1norm <= tol
         if not converged or not np.all(np.isfinite(x)):
             raise ValueError(
-                "Markov-lánc nem abszorbeert: (I - Q^T) x = b rendszernek nincs stabil "
-                "megoldása. Ez akkor fordulhat elő, ha egy állapotkészlet záró hurokot "
-                "épít, amelyről nem lehet konvertálni vagy kilépni. Residuális: "
-                f"{r1norm:.3e}, solver állapot: {istop}."
+                f"Non-absorbing Markov chain: (I - Q^T) x = b has no stable "
+                f"solution (istop={istop}, residual={r1norm:.3e}). This can happen "
+                "when a closed state class cannot reach conversion or exit."
             )
 
         return _validate(x, "lsqr")
@@ -421,18 +454,27 @@ class MarkovJourneyEngine:
         base_margin = self.solve_prob(weight_col="net_margin")
 
         rows = []
+        margin_reportable = base_margin > 0
         for ch in self.channels:
             rem_cvr = self.solve_prob(weight_col="conversions", drop=[ch])
             rem_margin = self.solve_prob(weight_col="net_margin", drop=[ch])
             re_vol = 1.0 - (rem_cvr / base_cvr) if base_cvr > 0 else 0.0
-            re_margin = 1.0 - (rem_margin / base_margin) if base_margin > 0 else 0.0
+            # Margin_RE ist signed: a channel removal that *improves* expected
+            # margin yields a negative removal effect. Clipping it to zero would
+            # hide a loss-making channel or an unsuitable baseline.
+            if margin_reportable:
+                re_margin = 1.0 - (rem_margin / base_margin)
+            else:
+                # A nonpositive baseline margin makes percentage attribution
+                # unsuitable; report NaN instead of a misleading zero effect.
+                re_margin = float("nan")
             rows.append(
                 {
                     "Csatorna": ch,
                     "Volume_RE": max(0.0, re_vol),
-                    "Margin_RE": max(0.0, re_margin),
+                    "Margin_RE": re_margin,
                     "Volume_RE_pct": max(0.0, re_vol) * 100,
-                    "Margin_RE_pct": max(0.0, re_margin) * 100,
+                    "Margin_RE_pct": re_margin * 100 if margin_reportable else float("nan"),
                 }
             )
         return pd.DataFrame(rows).sort_values("Volume_RE", ascending=False)

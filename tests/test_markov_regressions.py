@@ -75,7 +75,8 @@ def test_missing_path_becomes_nan_channel_rejected():
     assert eng.channels == ["A", "B"]
 
 
-def test_negative_counts_clamped_to_zero():
+def test_negative_counts_rejected_by_engine():
+    """Direct engine input must reject negative counts, matching the loader."""
     df = pd.DataFrame(
         {
             "path": ["A > B", "C > D"],
@@ -83,11 +84,12 @@ def test_negative_counts_clamped_to_zero():
             "nulls": [0, -2],
         }
     )
-    eng = MarkovJourneyEngine(df, k=2)
-    assert eng.solve_prob(weight_col="conversions") >= 0.0
+    with pytest.raises(ValueError, match="Ervenytelen"):
+        MarkovJourneyEngine(df, k=2)
 
 
-def test_non_finite_values_rejected():
+def test_non_finite_counts_rejected_by_engine():
+    """Direct engine input must reject non-finite counts, matching the loader."""
     df = pd.DataFrame(
         {
             "path": ["A > B", "C > D", "E > F"],
@@ -95,9 +97,22 @@ def test_non_finite_values_rejected():
             "nulls": [5, 5, 5],
         }
     )
-    eng = MarkovJourneyEngine(df, k=2)
-    # Inf rows must not corrupt the chain; finite CVR expected.
-    assert 0.0 <= eng.solve_prob(weight_col="conversions") <= 1.0
+    with pytest.raises(ValueError, match="Ervenytelen"):
+        MarkovJourneyEngine(df, k=2)
+
+
+def test_non_finite_margin_rejected_by_engine():
+    """Direct engine input must reject non-finite margin, matching the loader."""
+    df = pd.DataFrame(
+        {
+            "path": ["A > B", "C > D"],
+            "conversions": [5, 5],
+            "nulls": [5, 5],
+            "net_margin": [100.0, np.inf],
+        }
+    )
+    with pytest.raises(ValueError, match="Ervenytelen"):
+        MarkovJourneyEngine(df, k=2)
 
 
 # --------------------------------------------------------------------------- #
@@ -186,6 +201,27 @@ def test_margin_re_aggregation_invariant():
     attr_b = eng_b.compute_attribution().set_index("Csatorna")
     for ch in ["A", "B"]:
         assert abs(attr_a.loc[ch, "Margin_RE"] - attr_b.loc[ch, "Margin_RE"]) < 1e-9
+
+
+def test_signed_margin_effect_preserved():
+    """Margin_RE must be signed: removing a loss-making channel improves margin."""
+    df = pd.DataFrame(
+        {
+            "path": ["A", "B"],
+            "conversions": [1, 1],
+            "nulls": [0, 0],
+            "net_margin": [100.0, -50.0],
+        }
+    )
+    eng = MarkovJourneyEngine(df, k=1)
+    attr = eng.compute_attribution().set_index("Csatorna")
+    assert abs(eng.solve_prob(weight_col="net_margin") - 25.0) < 1e-9
+    # Removing B (margin -50) raises expected margin: Margin_RE is negative.
+    assert attr.loc["B", "Margin_RE"] < 0
+    # Removing A (margin +100) lowers expected margin: Margin_RE is positive.
+    assert attr.loc["A", "Margin_RE"] > 0
+    # Nothing is clipped to zero.
+    assert attr.loc["B", "Margin_RE"] != 0.0
 
 
 def test_deterministic_steps_exact_values():
@@ -377,7 +413,7 @@ def test_actual_generator_output_reconciles(tmp_path):
     import duckdb
 
     j = duckdb.execute(
-        "SELECT path_id, conversions, revenue FROM read_parquet(?)",
+        "SELECT path_id, conversions, revenue, net_margin FROM read_parquet(?)",
         [str(tmp_path / "customer_journeys.parquet")],
     ).df()
     b = duckdb.execute(
@@ -388,12 +424,21 @@ def test_actual_generator_output_reconciles(tmp_path):
     conv_ids = set(j.loc[j["conversions"] == 1, "path_id"])
     # Revenue reconciles with aggregate base table.
     assert abs(float(j["revenue"].sum()) - 101_192_500.0) < 1.0
+    # Margin reconciles: 30% of revenue.
+    assert abs(float(j["net_margin"].sum()) - 30_357_750.0) < 1.0
     # Every basket references a converting journey.
     assert set(b["path_id"]) <= conv_ids
     # No duplicate basket keys (one basket per journey).
     assert b["path_id"].is_unique
     # Journey IDs are unique.
     assert j["path_id"].is_unique
+    # Every converting row gets margin = 30% of its revenue, not aggregate.
+    conv_rows = j[j["conversions"] == 1]
+    for _, row in conv_rows.iterrows():
+        assert abs(row["net_margin"] - row["revenue"] * 0.30) < 1e-6, f"{row['path_id']}"
+    non_conv = j[j["conversions"] == 0]
+    assert (non_conv["net_margin"] == 0.0).all()
+    assert (non_conv["revenue"] == 0.0).all()
 
 
 # --------------------------------------------------------------------------- #
@@ -524,6 +569,33 @@ def test_solver_rejects_non_absorbing_chain():
     b[eng._state_idx[START]] = 1.0
     with pytest.raises(ValueError, match="nem abszorbeert|no stable solution"):
         eng._solve_visit_system(sp.eye(n, format="csr") - Q_bad.T, b)
+
+
+def test_channel_name_with_delimiter_rejected():
+    """Channel names containing "__" collide with k-order state encoding."""
+    df = pd.DataFrame(
+        {
+            "path": ["A__B > C", "C"],
+            "conversions": [5, 5],
+            "nulls": [5, 5],
+        }
+    )
+    with pytest.raises(ValueError, match="Érvénytelen csatornánév"):
+        MarkovJourneyEngine(df, k=2)
+
+
+def test_reserved_state_name_rejected():
+    """Channel names must not collide with reserved state names."""
+    for bad in ["(Start)", "(Conversion)", "(Null)"]:
+        df = pd.DataFrame(
+            {
+                "path": [bad, "A"],
+                "conversions": [5, 5],
+                "nulls": [5, 5],
+            }
+        )
+        with pytest.raises(ValueError, match="Érvénytelen csatornánév"):
+            MarkovJourneyEngine(df, k=2)
 
 
 # --------------------------------------------------------------------------- #
