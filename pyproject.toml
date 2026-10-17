@@ -1,6 +1,6 @@
 [build-system]
 requires = ["setuptools>=61.0"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
 name = "markov-journey"
@@ -8,6 +8,14 @@ version = "1.0.0"
 description = "Sparse Higher-Order Markov Attribution Engine with RFM, MBA and MMM integration"
 readme = "README.md"
 requires-python = ">=3.9"
+dependencies = [
+    "streamlit>=1.28.0",
+    "pandas>=2.0.0",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
+    "plotly>=5.18.0",
+    "duckdb>=0.8.0",
+]
 authors = [
     { name = "Markov Journey Team", email = "team@example.com" },
 ]
@@ -35,9 +43,6 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Information Analysis",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
-
-[project.scripts]
-markov-journey = "app:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

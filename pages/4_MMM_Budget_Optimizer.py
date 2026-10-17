@@ -24,7 +24,7 @@ st.title("📈 MMM Budget Optimizer")
 st.markdown(
     "**Markov → MMM integráció.** A Journey Mapper Removal Effect-ja és a csatorna-költségek "
     "alapján előállítjuk a Bayes-i priort (LogNormal) a csatornaegyütthatókra, amellyel "
-    "feloldható a MMM multikollinearitási問題a (pl. Social Ads és Search egyidézik mozog)."
+    "feloldható a MMM multikollinearitási problémája (pl. Social Ads és Search egyidejű mozog)."
 )
 
 # -----------------------------------------------------------------------------
@@ -97,7 +97,7 @@ st.subheader("3️⃣ Bayes-i Priorok az MMM-hez")
 priors = export_markov_priors_for_mmm(attr_df, spend_dict, confidence_weight=confidence_weight)
 
 if not priors:
-    st.info("Nincs egyedüli érvényes csatorna spend델 광áshoz.")
+    st.info("Nincs egyedüli érvényes csatorna a spend-hez.")
 else:
     prior_df = pd.DataFrame([
         {

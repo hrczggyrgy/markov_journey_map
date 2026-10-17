@@ -43,8 +43,8 @@ markov_journey/
 ## Gyorsindítás
 
 ```bash
-# Klónozd a repot
-git clone <github-link>
+# Klónozd a repot (cserélj le a ténylees repository URL-jevel)
+git clone https://github.com/you/markov_journey.git
 cd markov_journey
 
 # Virtuális környezet

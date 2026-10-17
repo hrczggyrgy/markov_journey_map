@@ -9,6 +9,8 @@ from core.markov_engine import (
     MarkovJourneyEngine,
     clean_journey,
     make_k_order_states,
+    CONVERSION,
+    NULL_STATE,
 )
 from core.data_loader import (
     load_aggregated_edges,
@@ -116,14 +118,27 @@ with st.sidebar:
     st.header("🧠 Markov Motor Beállítások")
     k_order = st.selectbox("Lánc-rend (k):", [1, 2, 3], index=1)
     collapse_loops = st.checkbox("Ötvöző hurkok eltávolítása (RLE)", value=True)
-    lookback_days = st.number_input(
-        "Visszamenőleges ablak (nap, 0 = nincs)", min_value=0, value=0, step=1
+    st.caption(
+        "Visszamenőleges ablak (lookback): nem állítható — az aggregált bemeneti adatok "
+        "nem Tartalmaznak Timestamp-ot, ezért az útvonalak dátumi szűrése nem megvalósítható."
     )
-    lookback_days = None if lookback_days == 0 else int(lookback_days)
 
     min_edge_pct = st.slider(
         "Minimum él-gyakoriság a Sankey-gráfon (%):",
         min_value=0.5, max_value=10.0, value=2.0, step=0.5,
+    )
+
+    st.divider()
+    st.info(
+        "Adatforrás: "
+        + ("beépített demó (Parquet/inline)" if data_source == "Beépített RFM + Journey demó adat"
+           else "feltöltött CSV")
+        + ". Az üzemanyag- és nettófedezet-értékek a betöltő 25 000 Ft / 30 % alapértékekkel "
+        "kiegészítik, ha a CSV nem tartalmazza őket."
+    )
+    st.caption(
+        "A visszamenőleges ablak (lookback) nincs érvénybe levaile: az aggregált bemeneti adatok "
+        "nincs Timestamps, ezért az útvonalak datumi szerinti szűrése lehetséges lehetetlen."
     )
 
 # -----------------------------------------------------------------------------
@@ -134,7 +149,6 @@ engine = MarkovJourneyEngine(
     path_sep=">",
     k=k_order,
     collapse_loops=collapse_loops,
-    lookback_days=lookback_days,
 )
 
 base_cvr = engine.solve_prob(weight_col="conversions")
@@ -254,38 +268,30 @@ with tab2:
 
     with col_sankey:
         st.subheader("Vásárlói Forgalom (Sankey-gráf)")
-        # Dense P mátrix újraépítése a Sankey-hoz (k-rendű állapottérből)
-        n_trans = engine.n_trans
-        n_all = len(engine.all_states)
-        P_dense = np.zeros((n_all, n_all))
-        if engine.Q_conv is not None:
-            Q_arr = engine.Q_conv.toarray()
-            R_arr = engine.R_conv.toarray()
-            P_dense[:n_trans, :n_trans] = Q_arr
-            P_dense[:n_trans, n_trans:] = R_arr
-        # Absorbing állapotok önmagukra
-        for abs_state in engine.absorbing_states:
-            idx = engine._state_idx[abs_state]
-            P_dense[idx, idx] = 1.0
+        # Valós átmenet-darabszámok a becsolt láncból (nem P * journey_sorösszeg becslés).
+        edge_counts = engine.transition_counts
+        state_idx = {s: i for i, s in enumerate(engine.all_states)}
 
         sources, targets, values, link_colors = [], [], [], []
-        threshold = (min_edge_pct / 100.0) * total_journeys
-        # Frekvencia mátrix approximáció: P * journey_sorösszege (lejegyzés a szerkezeti elderséghez)
-        for i in range(n_trans):
-            for j in range(n_all):
-                # Él-súly becslése: P_hex * total_journeys (csak megjelenítéshez)
-                w = P_dense[i, j] * total_journeys
-                if w >= threshold:
-                    sources.append(i)
-                    targets.append(j)
-                    values.append(w)
-                    target_name = engine.all_states[j]
-                    if target_name == "(Conversion)":
-                        link_colors.append("rgba(16, 185, 129, 0.45)")
-                    elif target_name == "(Null)":
-                        link_colors.append("rgba(239, 68, 68, 0.25)")
-                    else:
-                        link_colors.append("rgba(59, 130, 246, 0.35)")
+        total_transitions = 0.0
+        if edge_counts:
+            total_transitions = sum(w for _, _, w in edge_counts)
+            # A szűrés határa: az összes átmenet X százaléka (megtartja a jelentős folyókat).
+            threshold = (min_edge_pct / 100.0) * total_transitions
+            for frm, to, w in edge_counts:
+                if w < threshold:
+                    continue
+                sources.append(state_idx[frm])
+                targets.append(state_idx[to])
+                values.append(w)
+                if to == CONVERSION:
+                    link_colors.append("rgba(16, 185, 129, 0.45)")
+                elif to == NULL_STATE:
+                    link_colors.append("rgba(239, 68, 68, 0.25)")
+                else:
+                    link_colors.append("rgba(59, 130, 246, 0.35)")
+        else:
+            threshold = 0.0
 
         fig_sankey = go.Figure(data=[go.Sankey(
             node=dict(pad=18, thickness=20, line=dict(color="black", width=0.5),
@@ -294,9 +300,24 @@ with tab2:
         )])
         fig_sankey.update_layout(height=520, margin=dict(l=10, r=10, t=20, b=20))
         st.plotly_chart(fig_sankey, use_container_width=True)
+        st.caption(
+            f"Élesszűrő: {min_edge_pct}% az összes átmenetből ({int(total_transitions):,} darab). "
+            "A szűrés elrejt hezeket, így a látható gráf eloszlása edust lehet."
+        )
 
     with col_heat:
         st.subheader("Átmeneti Valószínűségi Mátrix ($P_{ij}$)")
+        n_trans = engine.n_trans
+        n_all = len(engine.all_states)
+        P_dense = np.zeros((n_all, n_all))
+        if engine.Q_conv is not None:
+            Q_arr = engine.Q_conv.toarray()
+            R_arr = engine.R_conv.toarray()
+            P_dense[:n_trans, :n_trans] = Q_arr
+            P_dense[:n_trans, n_trans:] = R_arr
+        for abs_state in engine.absorbing_states:
+            idx = state_idx[abs_state]
+            P_dense[idx, idx] = 1.0
         p_df = pd.DataFrame(
             P_dense[:n_trans, :] * 100,
             index=engine.transient_states,

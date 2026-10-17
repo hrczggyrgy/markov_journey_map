@@ -115,25 +115,27 @@ for ch in engine.channels:
     re_ = 1.0 - (rem / base_cvr) if base_cvr > 0 else 0.0
     rows.append({"Csatorna": ch, "Cross-sell Removal Effect (%)": max(0.0, re_) * 100})
 
-re_df = pd.DataFrame(rows).sort_values("Cross-sell Removal Effect (%)", ascending=False)
+if rows:
+    re_df = pd.DataFrame(rows).sort_values("Cross-sell Removal Effect (%)", ascending=False)
+    fig_re = px.bar(
+        re_df,
+        x="Csatorna",
+        y="Cross-sell Removal Effect (%)",
+        text_auto=".1f",
+        color="Cross-sell Removal Effect (%)",
+        color_continuous_scale="Blues",
+        title="Melyik csatorna kiesése veszítheti le a legtöbb cross-sell konverziót",
+    )
+    fig_re.update_layout(height=420, margin=dict(l=10, r=10, t=40, b=20))
+    st.plotly_chart(fig_re, use_container_width=True)
 
-fig_re = px.bar(
-    re_df,
-    x="Csatorna",
-    y="Cross-sell Removal Effect (%)",
-    text_auto=".1f",
-    color="Cross-sell Removal Effect (%)",
-    color_continuous_scale="Blues",
-    title="Melyik csatorna kiesése veszítheti le a legtöbb cross-sell konverziót",
-)
-fig_re.update_layout(height=420, margin=dict(l=10, r=10, t=40, b=20))
-st.plotly_chart(fig_re, use_container_width=True)
-
-st.dataframe(
-    re_df.style.format({"Cross-sell Removal Effect (%)": "{:.2f}%"}),
-    use_container_width=True,
-    hide_index=True,
-)
+    st.dataframe(
+        re_df.style.format({"Cross-sell Removal Effect (%)": "{:.2f}%"}),
+        use_container_width=True,
+        hide_index=True,
+    )
+else:
+    st.info("Nincs cross-sell konverzió, ezért nem áll rendelkezésre Removal Effect.")
 
 st.caption(
     "Módszer: az MBA tábla alapján csak a cross-sell kosárak konverzióit használjuk a Markov "

@@ -84,7 +84,13 @@ def load_csv_journeys(
     if missing:
         raise ValueError(f"Hiányzó kötelező oszlopok: {', '.join(missing)}")
 
-    # Opcionális oszlopok kiegészítése alapértékekkel
+    # 1. Szükséges numerikus oszlopok felolvasása ELŐRE, mielőtt bármilyen
+    #    alapértékeket deriváltunk belőlük (kerüljük, hogy hibás string
+    #    default-bevétel kiszámításakor crash-eljen vagy csendes 00-ra legyen).
+    df["conversions"] = pd.to_numeric(df["conversions"], errors="coerce").fillna(0.0).astype(float)
+    df["nulls"] = pd.to_numeric(df["nulls"], errors="coerce").fillna(0.0).astype(float)
+
+    # 2. Opcionális oszlopok kiegészítése alapértékekkel (már tisztán numerikus alapokon)
     if "rfm_segment" not in df.columns:
         df["rfm_segment"] = default_segment
     if "revenue" not in df.columns:
@@ -92,11 +98,8 @@ def load_csv_journeys(
     if "net_margin" not in df.columns:
         df["net_margin"] = df["revenue"].astype(float) * default_margin_rate
 
-    # Típusok homogénítása
-    df["conversions"] = pd.to_numeric(df["conversions"], errors="coerce").fillna(0.0)
-    df["nulls"] = pd.to_numeric(df["nulls"], errors="coerce").fillna(0.0)
-    df["revenue"] = pd.to_numeric(df["revenue"], errors="coerce").fillna(0.0)
-    df["net_margin"] = pd.to_numeric(df["net_margin"], errors="coerce").fillna(0.0)
+    df["revenue"] = pd.to_numeric(df["revenue"], errors="coerce").fillna(0.0).astype(float)
+    df["net_margin"] = pd.to_numeric(df["net_margin"], errors="coerce").fillna(0.0).astype(float)
     df["path"] = df["path"].astype(str)
     df["rfm_segment"] = df["rfm_segment"].astype(str)
 

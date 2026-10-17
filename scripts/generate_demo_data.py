@@ -33,18 +33,7 @@ def generate() -> None:
     })
     duckdb.execute(f"COPY (SELECT * FROM rfm) TO '{DATA_DIR}/unified_customers_rfm.parquet' (FORMAT PARQUET)")
 
-    # 2. transaction_baskets_mba.parquet
-    baskets = pd.DataFrame({
-        "order_id": [f"O{i:06d}" for i in range(n)],
-        "path_id": [f"P{i:06d}" for i in range(n)],
-        "is_cross_sell_bundle": rng.choice([True, False], n, p=[0.35, 0.65]),
-        "bundle_type": rng.choice(["None", "Cross-sell", "Upsell"], n, p=[0.65, 0.25, 0.10]),
-        "net_margin": rng.exponential(18000, n).round(0),
-        "anchor_category": rng.choice(["Electronics", "Fashion", "Home", "Beauty"], n),
-    })
-    duckdb.execute(f"COPY (SELECT * FROM baskets) TO '{DATA_DIR}/transaction_baskets_mba.parquet' (FORMAT PARQUET)")
-
-    # 3. customer_journeys.parquet
+    # 2. customer_journeys.parquet — one row per actual journey, per-journey money
     base = [
         ("Social_Ads > Blog > Search_NonBrand > Email", "Új vásárlók", 140, 420, 24000),
         ("Social_Ads > Search_NonBrand > Search_Brand", "Új vásárlók", 190, 510, 26500),
@@ -66,24 +55,41 @@ def generate() -> None:
         ("Display_Ads > Blog > Retargeting", "Lemorzsolódó (At Risk)", 65, 490, 28000),
     ]
     rows = []
+    journey_id = 0
     for path, seg, conv, nulls, aov in base:
-        rev = conv * aov
-        margin = rev * 0.3
-        journeys = conv + nulls
-        for j in range(journeys):
+        per_conv_margin = aov * 0.30
+        total_journeys = conv + nulls
+        for j in range(total_journeys):
             is_conv = j < conv
+            journey_id += 1
             rows.append({
-                "path_id": f"J{len(rows):07d}",
+                "path_id": f"J{journey_id:07d}",
                 "path": path,
                 "rfm_segment": seg,
                 "conversions": 1 if is_conv else 0,
                 "nulls": 0 if is_conv else 1,
-                "revenue": rev if is_conv else 0,
-                "net_margin": margin if is_conv else 0,
+                "revenue": aov if is_conv else 0.0,
+                "net_margin": per_conv_margin if is_conv else 0.0,
                 "journey_date": pd.Timestamp("2026-01-01") + pd.Timedelta(days=int(rng.integers(0, 90))),
             })
     journeys = pd.DataFrame(rows)
     duckdb.execute(f"COPY (SELECT * FROM journeys) TO '{DATA_DIR}/customer_journeys.parquet' (FORMAT PARQUET)")
+
+    # 3. transaction_baskets_mba.parquet — basket path_id matches journey ids;
+    # bundle_type and is_cross_sell_bundle are consistent with each other.
+    journey_ids = [f"J{i:07d}" for i in range(1, len(journeys) + 1)]
+    basket_ids = rng.choice(journey_ids, n, replace=True)
+    is_cross = rng.choice([True, False], n, p=[0.35, 0.65])
+    bundle_type = np.where(is_cross, "Cross-sell", "None")
+    baskets = pd.DataFrame({
+        "order_id": [f"O{i:06d}" for i in range(n)],
+        "path_id": basket_ids,
+        "is_cross_sell_bundle": is_cross,
+        "bundle_type": bundle_type,
+        "net_margin": rng.exponential(18000, n).round(0),
+        "anchor_category": rng.choice(["Electronics", "Fashion", "Home", "Beauty"], n),
+    })
+    duckdb.execute(f"COPY (SELECT * FROM baskets) TO '{DATA_DIR}/transaction_baskets_mba.parquet' (FORMAT PARQUET)")
 
     # 4. channel_daily_spend_mmm.parquet
     channels = ["Social_Ads", "Search_NonBrand", "Search_Brand", "Email", "Retargeting", "Display_Ads", "Blog"]

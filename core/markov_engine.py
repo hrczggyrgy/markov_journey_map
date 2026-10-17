@@ -1,14 +1,16 @@
-"""Ritkamátrixos (Sparse), k-adik rendű és fedezetsúlyozott Markov-útvonal motor.
+"""Ritkamátrixos (sparse), k-adik rendű Markov-útvonal motor terminális fedezet-jutalommal.
 
-Erőforrás-takarékos megvalósítás a np.linalg.pinv(I - Q) helyett:
-  * (I - Q^T) x = e_start ritka lineáris egyenletrendszer megoldása scipy.sparse-szal
+Erőforrás-takarékos megvalósítás np.linalg.pinv(I - Q) helyett:
+  * (I - Q^T) x = e_start ritka lineáris egyenletrendszer scipy.sparse-szal
   * k-rendű állapotok (pl. 'Meta__Blog -> Search')
-  * párhuzamos átmeneti mátrixok: konverziós sűrűség és nettó fedezet
-  * N * 1 vektorból átlépések számának és átlagos időnek a kiszámolása
+  * átmeneti lánc szorzós alapú (conversions, nulls) valószínűségi lánc
+  * nettó fedezet terminális jutalomként: v = Qv + r_margin
+  * N * 1 vektorból átlépések számának a kiszámolása
 """
 
 from __future__ import annotations
 
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import groupby
@@ -34,12 +36,18 @@ def clean_journey(raw_steps: list[str], collapse_loops: bool = True) -> list[str
 def make_k_order_states(steps: list[str], k: int = 2) -> list[str]:
     """Útvonal átalakítása k-adik rendű állapotokká.
 
+    Egyetlen állapot generálódik megfigyelt érintkezésenként, a k-1 pêldányos
+    START kiesítéssel a korábbi értékek helyett. Így egy deterministic
+    három-érintkezéses útvonal pontosan három állapotot és három fizikai
+    átmenetetopoietic, függetlenül k-tol.
+
     Pl. ['Meta', 'Blog', 'Search'], k=2 -> ['(Start)__Meta', 'Meta__Blog', 'Blog__Search']
     """
-    padded = [START] + list(steps)
-    if len(padded) <= k:
-        return ["__".join(padded)]
-    return ["__".join(padded[i : i + k]) for i in range(len(padded) - k + 1)]
+    k = max(1, int(k))
+    if not steps:
+        return []
+    padded = [START] * (k - 1) + list(steps)
+    return ["__".join(padded[i : i + k]) for i in range(len(steps))]
 
 
 @dataclass
@@ -50,17 +58,25 @@ class ChainFit:
     state_idx: dict[str, int]
     Q_conv: sp.csr_matrix
     R_conv: sp.csr_matrix  # oszlop 0: Conversion, oszlop 1: Null
-    Q_margin: sp.csr_matrix
-    R_margin: sp.csr_matrix
+    r_margin: np.ndarray  # állapotonkénti várható azonnali fedezet-jutalom
     transient_states: list[str]
     absorbing_states: list[str]
     n_trans: int
     n_all: int
-    path_weights: dict[tuple[str, str], dict[str, float]]
 
 
 class MarkovJourneyEngine:
-    """Higher-order, sparse, value-weighted Markov journey engine."""
+    """Higher-order, sparse, count-based Markov journey engine with terminal margin reward.
+
+    The transition chain (Q_conv, R_conv) is purely count-based: a real Markov
+    chain over journeys. Margin is modelled as a *terminal reward* earned on the
+    transition into Conversion (expected immediate margin per state), not as money
+    flowing through every intermediate edge. Expected margin from Start is then
+
+        v = Q v + r_margin   <=>   v = (I - Q)^-1 r_margin
+
+    which is aggregation-invariant and keeps non-converting outcomes in the chain.
+    """
 
     def __init__(
         self,
@@ -76,6 +92,9 @@ class MarkovJourneyEngine:
         self.sep = path_sep
         self.k = max(1, int(k))
         self.collapse_loops = collapse_loops
+        # lookback/date args are accepted for API compatibility but not applied:
+        # the aggregate CSV/Parquet input carries no per-journey timestamps, so a
+        # date filter cannot be meaningfully computed here.
         self.lookback_days = lookback_days
         self.date_col = date_col
         self.conversion_date_col = conversion_date_col
@@ -84,8 +103,7 @@ class MarkovJourneyEngine:
         self._state_idx: dict[str, int] = {}
         self.Q_conv: sp.csr_matrix | None = None
         self.R_conv: sp.csr_matrix | None = None
-        self.Q_margin: sp.csr_matrix | None = None
-        self.R_margin: sp.csr_matrix | None = None
+        self.r_margin: np.ndarray | None = None
         self.transient_states: list[str] = []
         self.absorbing_states: list[str] = [CONVERSION, NULL_STATE]
         self.all_states: list[str] = []
@@ -108,167 +126,203 @@ class MarkovJourneyEngine:
         total: float,
         conv: float,
         nulls: float,
-        margin: float,
-    ) -> dict[tuple[str, str], dict[str, float]]:
-        """Egy útvonal bontása élek/retepárakká k-rendű állapotokkal.
+    ) -> tuple[list[tuple[str, str, float]], str | None]:
+        """Bontja az útvonalat élekre (from, to, journey_count).
 
-        Visszatér egy dict-el: {(from_state, to_state): {'conv': w, 'margin': w*margin}}
+        Visszatér az élekkel és az utolsó állapottal (amelyről a konverziós
+        fedezet-jutalom attach-olódik terminálisan).
         """
         k_states = make_k_order_states(steps, self.k)
-        edges: dict[tuple[str, str], dict[str, float]] = defaultdict(
-            lambda: {"conv": 0.0, "margin": 0.0}
-        )
+        edges: list[tuple[str, str, float]] = []
+
+        if not k_states:
+            return edges, None
 
         prev = START
-        # (Start) -> első k-rendű állapot (teljes útvonal-számmal)
-        first = k_states[0] if k_states else NULL_STATE
-        edges[(prev, first)]["conv"] += total
-        edges[(prev, first)]["margin"] += total * margin
+        first = k_states[0]
+        edges.append((prev, first, total))
 
-        # Középsi átmenetek k-rendű állapottól állapothoz (teljes útvonal-számmal)
         for i in range(len(k_states) - 1):
-            frm, to = k_states[i], k_states[i + 1]
-            edges[(frm, to)]["conv"] += total
-            edges[(frm, to)]["margin"] += total * margin
+            edges.append((k_states[i], k_states[i + 1], total))
 
-        # Utolsó állapot -> elnyelő állapotok: konverzió és null szétválasztva
-        last = k_states[-1] if k_states else NULL_STATE
-        edges[(last, CONVERSION)]["conv"] += conv
-        edges[(last, CONVERSION)]["margin"] += conv * margin
-        edges[(last, NULL_STATE)]["conv"] += nulls
-        edges[(last, NULL_STATE)]["margin"] += 0.0  # null útvonal nem hoz bevételt
+        last = k_states[-1]
+        edges.append((last, CONVERSION, conv))
+        edges.append((last, NULL_STATE, nulls))
 
-        return edges
+        return edges, last
 
     # ------------------------------------------------------------------ #
     # Mátrix építés
     # ------------------------------------------------------------------ #
     def _fit(self) -> None:
-        rows_conv: list[int] = []
-        cols_conv: list[int] = []
-        data_conv: list[float] = []
-        rows_margin: list[int] = []
-        cols_margin: list[int] = []
-        data_margin: list[float] = []
+        raw_frm: list[str] = []
+        raw_to: list[str] = []
+        raw_w: list[float] = []
 
         channels_set: set[str] = set()
-        edge_weights: dict[tuple[str, str], dict[str, float]] = defaultdict(
-            lambda: {"conv": 0.0, "margin": 0.0}
-        )
+        # conv_margin[state] = fedezet-osszeg a Conversionba iranyulo atmeneten;
+        # departures[state] = osszes atmenet szama az allapotbol.
+        conv_margin: dict[str, float] = defaultdict(float)
+        departures: dict[str, float] = defaultdict(float)
 
         for _, row in self.df.iterrows():
-            steps = self._parse_steps(str(row["path"]))
+            path_val = row["path"]
+            if pd.isna(path_val):
+                continue
+            steps = self._parse_steps(str(path_val))
             if not steps:
                 continue
 
             conv = float(row.get("conversions", 0) or 0)
             nulls = float(row.get("nulls", 0) or 0)
+            # Konverziós/kilépési számoknak végleges, nem negatív értékeknek
+            # kell lenniük (sosem lehet negatív átmeneti valószínűség).
+            # Négatív pénzügyi értékek (net_margin) különlegesen kezelhetők,
+            # azok nem eredményeznek negatív átmenetet.
+            if not (np.isfinite(conv) and np.isfinite(nulls)) or conv < 0 or nulls < 0:
+                continue
             total = conv + nulls
             if total <= 0:
                 continue
 
-            margin = float(row.get("net_margin", row.get("avg_order_value", 0)) or 0)
-            # Több csatornát is tartalmazó útvonalnál a margin-t osztjuk el
-            w_margin = total * margin
+            # net_margin egy soron aggregated fedezet-osszeg a konverziorol.
+            margin_dollars = float(row.get("net_margin", 0.0) or 0.0)
 
             for ch in steps:
                 channels_set.add(ch)
 
-            edge_block = self._expand_to_edges(steps, total, conv, nulls, margin)
-            for (frm, to), vals in edge_block.items():
-                edge_weights[(frm, to)]["conv"] += vals["conv"]
-                edge_weights[(frm, to)]["margin"] += vals["margin"]
+            edges, last = self._expand_to_edges(steps, total, conv, nulls)
+            for frm, to, w in edges:
+                raw_frm.append(frm)
+                raw_to.append(to)
+                raw_w.append(w)
+                departures[frm] += w
+
+            if last is not None and conv > 0:
+                conv_margin[last] += margin_dollars
 
         self.channels = sorted(channels_set)
-        # Állapottér: Start + k-rendű állapotok, amiket a gyűjtött élek határoznak meg
-        k_order_states: set[str] = set()
-        for (frm, to) in edge_weights:
-            k_order_states.add(frm)
-            k_order_states.add(to)
 
-        self.transient_states = [START] + sorted(k_order_states - {CONVERSION, NULL_STATE, START})
+        # Állapottér: Start + minden intermédiaire állapot, amire egy élek hivatkozik.
+        referenced: set[str] = set(raw_frm) | set(raw_to)
+        k_order_states = {s for s in referenced if s not in (CONVERSION, NULL_STATE, START)}
+        self.transient_states = [START] + sorted(k_order_states)
         self.all_states = self.transient_states + self.absorbing_states
         self._state_idx = {s: i for i, s in enumerate(self.all_states)}
         self.n_trans = len(self.transient_states)
         self.n_all = len(self.all_states)
 
         n = self.n_all
-        for (frm, to), vals in edge_weights.items():
-            i = self._state_idx[frm]
-            j = self._state_idx[to]
-            rows_conv.append(i)
-            cols_conv.append(j)
-            data_conv.append(vals["conv"])
-            rows_margin.append(i)
-            cols_margin.append(j)
-            data_margin.append(vals["margin"])
+        rows_num: list[int] = []
+        cols_num: list[int] = []
+        data_num: list[float] = []
+        for frm, to, w in zip(raw_frm, raw_to, raw_w):
+            rows_num.append(self._state_idx[frm])
+            cols_num.append(self._state_idx[to])
+            data_num.append(w)
 
-        # Absorbing állapotok önmagukra mutassanak 1.0-sсал
+        # Absorbing állapotok önmagakra mutassanak: Conversion->Conversion 1.0,
+        # Null->Null 1.0 (tartsa meg a sorösszet 1-essé a normalizáláshoz).
         for abs_state in self.absorbing_states:
             idx = self._state_idx[abs_state]
-            rows_conv.extend([idx, idx])
-            cols_conv.extend([idx, idx])
-            data_conv.extend([1.0, 0.0])
-            rows_margin.extend([idx, idx])
-            cols_margin.extend([idx, idx])
-            data_margin.extend([1.0, 0.0])
+            rows_num.extend([idx, idx])
+            cols_num.extend([idx, idx])
+            data_num.extend([1.0, 0.0])
 
         freq_conv = sp.csr_matrix(
-            (data_conv, (rows_conv, cols_conv)), shape=(n, n), dtype=np.float64
-        )
-        freq_margin = sp.csr_matrix(
-            (data_margin, (rows_margin, cols_margin)), shape=(n, n), dtype=np.float64
+            (data_num, (rows_num, cols_num)), shape=(n, n), dtype=np.float64
         )
 
         # Sorok normalizálása valószínűségi mátrixokká
-        def _row_normalize(freq: sp.csr_matrix) -> sp.csr_matrix:
-            row_sums = np.asarray(freq.sum(axis=1)).flatten()
-            inv = np.where(row_sums > 0, 1.0 / np.maximum(row_sums, 1e-12), 0.0)
-            return freq.multiply(sp.csr_matrix(inv[:, None]))
+        row_sums = np.asarray(freq_conv.sum(axis=1)).flatten()
+        inv = np.where(row_sums > 0, 1.0 / np.maximum(row_sums, 1e-12), 0.0)
+        P_conv = freq_conv.multiply(sp.csr_matrix(inv[:, None]))
 
-        P_conv = _row_normalize(freq_conv)
-        P_margin = _row_normalize(freq_margin)
-
-        # Kanonikus felbontás
+        # Kanonikus felbontás: Q (átmeneti × átmeneti), R (átmeneti × elnyelő)
         self.Q_conv = P_conv[: self.n_trans, : self.n_trans].tocsr()
         self.R_conv = P_conv[: self.n_trans, self.n_trans :].tocsr()
-        self.Q_margin = P_margin[: self.n_trans, : self.n_trans].tocsr()
-        self.R_margin = P_margin[: self.n_trans, self.n_trans :].tocsr()
+
+        # Terminal margin reward: r[i] = várható azonnali fedezet az állapotból
+        # kilepéskor = fedezet-összeg a konverzióról / összes kilepés számából.
+        self.r_margin = np.zeros(self.n_trans, dtype=np.float64)
+        for state, val in conv_margin.items():
+            if state in self._state_idx:
+                i = self._state_idx[state]
+                dep = departures.get(state, 0.0)
+                if dep > 0:
+                    self.r_margin[i] = val / dep
 
         self._states = self.all_states
-        self._state_idx = self._state_idx
+
+    @property
+    def transition_counts(self) -> list[tuple[str, str, float]]:
+        """Null-nélküli átmenetek (forrás állapot, cél állapot, darabszám) a becsolt láncból."""
+        if self._freq_conv is None:
+            return []
+        coo = self._freq_conv.tocoo()
+        return [
+            (self.all_states[int(i)], self.all_states[int(j)], float(w))
+            for i, j, w in zip(coo.row, coo.col, coo.data)
+            if w > 0
+        ]
 
     # ------------------------------------------------------------------ #
     # Ritka lineáris egyenletrendszer: (I - Q^T) y = e_start
-    # A megoldásból y^T @ R kapjuk a (Start) sor elnyelési valóscheinlichségeit.
+    # y[j] = várható látogatásszám a j állapotra a Start-ból indulva.
     # ------------------------------------------------------------------ #
-    def _absorption_from_start(
-        self, Q: sp.csr_matrix, R: sp.csr_matrix
-    ) -> np.ndarray:
-        """Visszatér a (Start) állapotból az elnyelési valóscheinlichségek vektorával."""
+    def _visit_vector_from_start(self, Q: sp.csr_matrix) -> np.ndarray:
+        """Visszatér a Start-ból indulva várható állapot-látogatásokkal."""
         n = Q.shape[0]
         I_minus_Q = sp.eye(n, format="csr") - Q.T
         e_start = np.zeros(n)
-        e_start[self._state_idx[START]] = 1.0
-        y = spla.spsolve(I_minus_Q, e_start)
-        # y^T @ R  ->  (start-sor elnyelési valóscheinlichségei minden absorbing állapotra)
-        return np.asarray(y @ R).flatten()
+        start_idx = self._state_idx.get(START)
+        if start_idx is None or n == 0:
+            return np.zeros(n)
+        e_start[start_idx] = 1.0
 
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", spla.MatrixRankWarning)
+                y = spla.spsolve(I_minus_Q, e_start)
+        except Exception:
+            # Singular or otherwise unsolvable system: least-squares fallback so
+            # we can still produce a finite result and a usable diagnostic.
+            y = spla.lsqr(I_minus_Q, e_start, atol=1e-10, btol=1e-10)[0]
+
+        y = np.asarray(y).flatten()
+        if not np.all(np.isfinite(y)):
+            y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
+        return y
+
+    def _absorption_prob(self, Q: sp.csr_matrix, R: sp.csr_matrix) -> float:
+        """Start-ból a Conversionba való elnyelési valószínűség."""
+        y = self._visit_vector_from_start(Q)
+        conv_col = np.asarray(R[:, 0].toarray()).ravel()
+        return float(np.dot(y, conv_col))
+
+    def _margin_value(self, Q: sp.csr_matrix, r_margin: np.ndarray) -> float:
+        """Start-ból indulva várható összes fedezet (Ft)."""
+        y = self._visit_vector_from_start(Q)
+        return float(y @ r_margin)
+
+    # ------------------------------------------------------------------ #
+    # Elnyelési valószínűség / várható fedezet a Start állapotból
+    # ------------------------------------------------------------------ #
     def solve_prob(
         self,
         weight_col: str = "conversions",
         drop: Iterable[str] | None = None,
     ) -> float:
-        """Elnyelési valószínűség a (Start) állapotból (Conversion oszlop).
+        """Valószínűség ('conversions') vagy várható fedezet ('net_margin') a Start-ból.
 
-        weight_col: 'conversions' | 'net_margin' (mely mátrixpárt használjuk)
-        drop: kicsapandó csatornák (kimenő éleik Null-ba irányítása)
+        weight_col: 'conversions' | 'net_margin'
+        drop: kicsapandó csatornák (kimenő éjeik Null-ba irányítása,
+              és a konverziós jutalomjuk törlése).
         """
         drop = set(drop or [])
         Q = self.Q_conv.copy()
         R = self.R_conv.copy()
-        Qm = self.Q_margin.copy()
-        Rm = self.R_margin.copy()
+        r_margin = self.r_margin.copy() if self.r_margin is not None else np.zeros(self.n_trans)
 
         if drop:
             for ch in drop:
@@ -278,22 +332,30 @@ class MarkovJourneyEngine:
                     if ch in state.split("__"):
                         idx = self._state_idx[state]
                         Q[idx, :] = 0.0
-                        Qm[idx, :] = 0.0
                         R[idx, 0] = 0.0
                         R[idx, 1] = 1.0
-                        Rm[idx, 0] = 0.0
+                        r_margin[idx] = 0.0
 
-        abs_probs = self._absorption_from_start(
-            Qm if weight_col == "net_margin" else Q,
-            Rm if weight_col == "net_margin" else R,
-        )
-        # Oszlop 0 = (Conversion)
-        return float(abs_probs[0])
+        if weight_col == "net_margin":
+            return self._margin_value(Q, r_margin)
+        return self._absorption_prob(Q, R)
 
     # ------------------------------------------------------------------ #
     # Attribúció: Removal Effect (dabszám- és fedezet-alapú)
     # ------------------------------------------------------------------ #
     def compute_attribution(self) -> pd.DataFrame:
+        empty = pd.DataFrame(
+            columns=[
+                "Csatorna",
+                "Volume_RE",
+                "Margin_RE",
+                "Volume_RE_pct",
+                "Margin_RE_pct",
+            ]
+        )
+        if self.n_trans == 0 or not self.channels:
+            return empty
+
         base_cvr = self.solve_prob(weight_col="conversions")
         base_margin = self.solve_prob(weight_col="net_margin")
 
@@ -319,13 +381,20 @@ class MarkovJourneyEngine:
     # ------------------------------------------------------------------ #
     def expected_steps_to_absorption(self) -> dict[str, float]:
         """Mekkora átlagos lépésszám szükséges minden átmeneti állapotból a végpontig."""
-        if self.Q_conv is None:
+        if self.Q_conv is None or self.n_trans == 0 or not self.channels:
             return {}
         n = self.n_trans
         I = sp.eye(n, format="csr")
-        # N = (I - Q)^-1  ->  N * 1 = x, ahol (I - Q) x = 1
         ones = np.ones(n)
-        x = spla.spsolve(I - self.Q_conv, ones)
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", spla.MatrixRankWarning)
+                x = spla.spsolve(I - self.Q_conv, ones)
+        except Exception:
+            x = spla.lsqr(I - self.Q_conv, ones, atol=1e-10, btol=1e-10)[0]
+        x = np.asarray(x).flatten()
+        if not np.all(np.isfinite(x)):
+            x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
         return {
             state: float(x[self._state_idx[state]])
             for state in self.transient_states
