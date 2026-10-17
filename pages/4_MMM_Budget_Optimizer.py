@@ -18,9 +18,9 @@ import duckdb
 from core.markov_engine import MarkovJourneyEngine
 from core.bridge_connectors import export_markov_priors_for_mmm
 
-st.set_page_config(page_title="MMM Budget Optimizer", page_icon="📈", layout="wide")
+st.set_page_config(page_title="MMM Prior Calibration", layout="wide")
 
-st.title("📈 MMM Budget Optimizer")
+st.title("MMM Prior Calibration")
 st.markdown(
     "**Markov → MMM integráció.** A Journey Mapper Removal Effect-ja és a csatorna-költségek "
     "alapján előállítjuk a Bayes-i priort (LogNormal) a csatornaegyütthatókra, amellyel "
@@ -32,7 +32,7 @@ st.markdown(
 # -----------------------------------------------------------------------------
 
 with st.sidebar:
-    st.header("⚙️ Beállítások")
+    st.header("Beállítások")
     confidence_weight = st.slider(
         "Prior hitelességi súlya (confidence_weight)",
         min_value=0.0, max_value=1.0, value=0.3, step=0.05,
@@ -48,7 +48,7 @@ spend_raw = duckdb.execute(
 ).df()
 spend_dict = dict(zip(spend_raw["channel"], spend_raw["total_spend"]))
 
-st.subheader("1️⃣ Csatorna-költségek")
+st.subheader("1. Csatorna-költségek")
 st.dataframe(
     spend_raw.sort_values("total_spend", ascending=False).style.format(
         {"total_spend": "{:,.0f} Ft"}
@@ -81,7 +81,7 @@ if not attr_df.empty and attr_df["Volume_RE"].sum() > 0:
 else:
     attr_df["Markov Bevétel (Ft)"] = 0.0
 
-st.subheader("2️⃣ Markov Attribúció (Removal Effect)")
+st.subheader("2. Markov Attribúció (Removal Effect)")
 st.dataframe(
     attr_df[["Csatorna", "Volume_RE_pct", "Margin_RE_pct", "Markov Bevétel (Ft)"]].style.format(
         {"Volume_RE_pct": "{:.2f}%", "Margin_RE_pct": "{:.2f}%", "Markov Bevétel (Ft)": "{:,.0f} Ft"}
@@ -93,7 +93,7 @@ st.dataframe(
 # -----------------------------------------------------------------------------
 # Bayes-i prior generálása
 # -----------------------------------------------------------------------------
-st.subheader("3️⃣ Bayes-i Priorok az MMM-hez")
+st.subheader("3. Bayes-i Priorok az MMM-hez")
 priors = export_markov_priors_for_mmm(attr_df, spend_dict, confidence_weight=confidence_weight)
 
 if not priors:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 import duckdb
 
@@ -84,13 +85,42 @@ def load_csv_journeys(
     if missing:
         raise ValueError(f"Hiányzó kötelező oszlopok: {', '.join(missing)}")
 
-    # 1. Szükséges numerikus oszlopok felolvasása ELŐRE, mielőtt bármilyen
-    #    alapértékeket deriváltunk belőlük (kerüljük, hogy hibás string
-    #    default-bevétel kiszámításakor crash-eljen vagy csendes 00-ra legyen).
-    df["conversions"] = pd.to_numeric(df["conversions"], errors="coerce").fillna(0.0).astype(float)
-    df["nulls"] = pd.to_numeric(df["nulls"], errors="coerce").fillna(0.0).astype(float)
+    # Szükséges numerikus oszlopok felolvasása ELŐRE, mielőtt bármilyen
+    # alapértékeket deriváltunk belőlük. Hibás értékeket NaN-ra konvertáljuk,
+    # hogy ezeket érvényesíthetjük és jeeljük, nem csendes Null-ra.
+    conversions_num = pd.to_numeric(df["conversions"], errors="coerce")
+    nulls_num = pd.to_numeric(df["nulls"], errors="coerce")
 
-    # 2. Opcionális oszlopok kiegészítése alapértékekkel (már tisztán numerikus alapokon)
+    # Érvényességi ellenőrzések ELSŐSORban, a string konverzió elött:
+    # - hiányzó útvonal (NaN) nem láthatóaként "nan" csatorná váljon
+    # - konverziós/kilépési számok végleges, nem negatív, nem negatív
+    rejected = []
+    path_is_missing = df["path"].isna()
+    counts_bad = conversions_num.isna() | nulls_num.isna() | ~np.isfinite(conversions_num) | ~np.isfinite(nulls_num) | (conversions_num < 0) | (nulls_num < 0)
+    bad_rows = path_is_missing | counts_bad
+    if bad_rows.any():
+        for idx in df.index[bad_rows]:
+            reasons = []
+            if path_is_missing.loc[idx]:
+                reasons.append("hiányzó útvonal")
+            c = conversions_num.loc[idx]
+            n = nulls_num.loc[idx]
+            if pd.isna(c) or not np.isfinite(c) or c < 0:
+                reasons.append(f"érvénytelen konverziós szám: {c!r}")
+            if pd.isna(n) or not np.isfinite(n) or n < 0:
+                reasons.append(f"érvénytelen kilépési szám: {n!r}")
+            rejected.append(f"sor {idx}: {'; '.join(reasons)}")
+        raise ValueError(
+            "A CSV tartalmaz érvénytelen sorokat, amelyeket nem lehet betölteni:\n"
+            + "\n".join(rejected[:10])
+            + (f"\n... és még {len(rejected) - 10} további sor" if len(rejected) > 10 else "")
+        )
+
+    # Minden megmaradt sor érvényes: konvertáljuk típust.
+    df["conversions"] = conversions_num.astype(float)
+    df["nulls"] = nulls_num.astype(float)
+
+    # Opcionális oszlopok kiegészítése alapértékekkel (már tisztán numerikus alapokon)
     if "rfm_segment" not in df.columns:
         df["rfm_segment"] = default_segment
     if "revenue" not in df.columns:
@@ -98,8 +128,15 @@ def load_csv_journeys(
     if "net_margin" not in df.columns:
         df["net_margin"] = df["revenue"].astype(float) * default_margin_rate
 
-    df["revenue"] = pd.to_numeric(df["revenue"], errors="coerce").fillna(0.0).astype(float)
-    df["net_margin"] = pd.to_numeric(df["net_margin"], errors="coerce").fillna(0.0).astype(float)
+    df["revenue"] = pd.to_numeric(df["revenue"], errors="coerce").astype(float)
+    df["net_margin"] = pd.to_numeric(df["net_margin"], errors="coerce").astype(float)
+    # Pénzügyi értékek véglegességének ellenőrzése.
+    if df["revenue"].isna().any() or df["net_margin"].isna().any():
+        bad_idx = df.index[df["revenue"].isna() | df["net_margin"].isna()].tolist()
+        raise ValueError(
+            "Érvénytelen pénzügyi érték a következő sorokban: "
+            + ", ".join(map(str, bad_idx[:10]))
+        )
     df["path"] = df["path"].astype(str)
     df["rfm_segment"] = df["rfm_segment"].astype(str)
 

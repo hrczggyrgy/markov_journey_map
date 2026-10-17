@@ -15,9 +15,9 @@ from core.markov_engine import MarkovJourneyEngine
 from core.data_loader import load_rfm_segments
 from core.bridge_connectors import compare_rfm_transition_matrices
 
-st.set_page_config(page_title="RFM Segmentation", page_icon="🎯", layout="wide")
+st.set_page_config(page_title="RFM Segmentation", layout="wide")
 
-st.title("🎯 RFM Segmentation & Transition Drift")
+st.title("RFM Segmentation & Transition Drift")
 st.markdown(
     "**RFM → Markov integráció.** Két RFM szegmens átmeneti valószínűségi mátrixának "
     "különbsége (Δ**P** = **P**ₐ − **P**ᵦ). Pozitív érték: a primera szegmensben "
@@ -47,10 +47,10 @@ if journeys.empty:
     st.warning("Nincs journey adat.")
     st.stop()
 
-st.subheader("1️⃣ RFM szegmens áttekintés")
+st.subheader("1. RFM szegmens áttekintés")
 seg_stats = (
     rfm_df.groupby("rfm_segment")
-    .agg(users=("user_id", "count"), avg_clv=("monetary", "mean"))
+    .agg(users=("user_id", "count"), average_monetary=("monetary", "mean"))
     .reset_index()
 )
 st.dataframe(seg_stats, use_container_width=True, hide_index=True)
@@ -78,7 +78,7 @@ if seg_a == seg_b:
 with st.spinner(f"Átmeneti mátrixok számítása: {seg_a} vs {seg_b}..."):
     delta_P = compare_rfm_transition_matrices(journeys, seg_a, seg_b, path_sep=">", k=2)
 
-st.subheader(f"2️⃣ Átmeneti mátrix különbség: {seg_a} − {seg_b} (százalékpont)")
+st.subheader(f"2. Átmeneti mátrix különbség: {seg_a} − {seg_b} (százalékpont)")
 st.markdown(
     f"Pozitív (zöld): {seg_a} jellemzőbb → {seg_b}hez képest. "
     f"Negatív (piros): {seg_b} jellemzőbb."
@@ -104,7 +104,7 @@ fig.update_layout(height=600, margin=dict(l=10, r=10, t=40, b=20))
 st.plotly_chart(fig, use_container_width=True)
 
 # Top eltérék táblázat
-st.subheader("3️⃣ Legnagyobb eltérések (Top 15)")
+st.subheader("3. Legnagyobb eltérések (Top 15)")
 long_df = (
     delta_P.stack()
     .reset_index()

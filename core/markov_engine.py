@@ -232,6 +232,12 @@ class MarkovJourneyEngine:
         freq_conv = sp.csr_matrix(
             (data_num, (rows_num, cols_num)), shape=(n, n), dtype=np.float64
         )
+        # A becsolt átmenet-szárazat tartalmazza a valós útvonal-elekeket és a
+        # szintetikus elnyelő önmagakra mutató éleket (Conversion→Conversion,
+        # Null→Null), amelyek a sorok normalizálásához szükségesek, de nem
+        # jelölnek megfigyelt forgalmat. A publikus transition_counts accessibility
+        # ezen utolsót szűri ki.
+        self._freq_conv = freq_conv
 
         # Sorok normalizálása valószínűségi mátrixokká
         row_sums = np.asarray(freq_conv.sum(axis=1)).flatten()
@@ -256,20 +262,70 @@ class MarkovJourneyEngine:
 
     @property
     def transition_counts(self) -> list[tuple[str, str, float]]:
-        """Null-nélküli átmenetek (forrás állapot, cél állapot, darabszám) a becsolt láncból."""
+        """Null-nélküli, megfigyelt átmenetek (forrás állapot, cél állapot, darabszám).
+
+        A szintetikus elnyelő önmagakra mutató élei (Conversion→Conversion,
+        Null→Null) nem fuhrnak forgalom, ezért kiszűrésre kerülnek.
+        """
         if self._freq_conv is None:
             return []
         coo = self._freq_conv.tocoo()
+        absorbing = {CONVERSION, NULL_STATE}
         return [
             (self.all_states[int(i)], self.all_states[int(j)], float(w))
             for i, j, w in zip(coo.row, coo.col, coo.data)
             if w > 0
+            and not (
+                self.all_states[int(i)] in absorbing
+                and self.all_states[int(j)] in absorbing
+                and i == j
+            )
         ]
 
     # ------------------------------------------------------------------ #
     # Ritka lineáris egyenletrendszer: (I - Q^T) y = e_start
     # y[j] = várható látogatásszám a j állapotra a Start-ból indulva.
     # ------------------------------------------------------------------ #
+    def _solve_visit_system(self, A: sp.csr_matrix, b: np.ndarray) -> np.ndarray:
+        """Megoldja A x = b a rendszerrel, és érvényesíti a megoldást.
+
+        Először közvetlen ritka megoldást próbál (szinguláris mátriz figyelmeztetés
+        hibaként), aztán iteratív legkisebb négyszögekkel egybecel convergencia és
+        residuális ellenőrzéssel. Ha a rendszer nem stabilizing, egy kontrollált
+        hibaüzenettel áll meg lugará_null helyett, hogy nullázatlan eredetet adna.
+        """
+        b_norm = float(np.linalg.norm(b))
+
+        # 1. Közvetlen ritka megoldás.
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", spla.MatrixRankWarning)
+                x = spla.spsolve(A, b)
+            x = np.asarray(x).flatten()
+            if np.all(np.isfinite(x)):
+                return x
+        except Exception:
+            pass  # fallback felé
+
+        # 2. Iteratív legkisebb négyszögek convergencia- és residuális-ellenőrzéssel.
+        result = spla.lsqr(A, b, atol=1e-10, btol=1e-10)
+        x = np.asarray(result[0]).flatten()
+        istop = int(result[1])
+        r1norm = float(result[3])  # ||r|| = ||b - A x||
+
+        # istop == 1: converged approximate solution. Residuális kell, hogy kis legyen
+        # ||b|| relativben (itt ||b|| = 1.0 az indulási vektor Normja).
+        converged = istop == 1 and r1norm <= 1e-6 * max(b_norm, 1e-12)
+        if not converged or not np.all(np.isfinite(x)):
+            raise ValueError(
+                "Markov-lánc nem abszorbeert: (I - Q^T) x = b rendszernek nincs stabil "
+                "megoldása. Ez akkor fordulhat elő, ha egy állapotkészlet záró hurokot "
+                "épít, amelyről nem lehet konvertálni vagy kilépni. Residuális: "
+                f"{r1norm:.3e}, solver állapot: {istop}."
+            )
+
+        return x
+
     def _visit_vector_from_start(self, Q: sp.csr_matrix) -> np.ndarray:
         """Visszatér a Start-ból indulva várható állapot-látogatásokkal."""
         n = Q.shape[0]
@@ -279,20 +335,7 @@ class MarkovJourneyEngine:
         if start_idx is None or n == 0:
             return np.zeros(n)
         e_start[start_idx] = 1.0
-
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("error", spla.MatrixRankWarning)
-                y = spla.spsolve(I_minus_Q, e_start)
-        except Exception:
-            # Singular or otherwise unsolvable system: least-squares fallback so
-            # we can still produce a finite result and a usable diagnostic.
-            y = spla.lsqr(I_minus_Q, e_start, atol=1e-10, btol=1e-10)[0]
-
-        y = np.asarray(y).flatten()
-        if not np.all(np.isfinite(y)):
-            y = np.nan_to_num(y, nan=0.0, posinf=0.0, neginf=0.0)
-        return y
+        return self._solve_visit_system(I_minus_Q, e_start)
 
     def _absorption_prob(self, Q: sp.csr_matrix, R: sp.csr_matrix) -> float:
         """Start-ból a Conversionba való elnyelési valószínűség."""

@@ -29,7 +29,6 @@ from core.bridge_connectors import (
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Markov Journey Mapper — Sparse Higher-Order Engine",
-    page_icon="🕸️",
     layout="wide"
 )
 
@@ -69,7 +68,7 @@ def generate_demo_data() -> pd.DataFrame:
 # -----------------------------------------------------------------------------
 # SIDEBAR: ADATFORRÁS, SZŰRŐK, MOTOR BEÁLLÍTÁSOK
 # -----------------------------------------------------------------------------
-st.title("🕸️ Markov Journey Mapper & Attribúciós Szimulátor")
+st.title("Markov Journey Mapper & Attribúciós Szimulátor")
 st.markdown(
     "**Ritkamátrixos (Sparse), k-adik rendű és fedezetsúlyozott** elnyelő Markov-lánc, "
     "Removal Effect kalkulátor, konverziós sebesség-diagnosztika és integrációs hídak az MMM, "
@@ -77,11 +76,13 @@ st.markdown(
 )
 
 with st.sidebar:
-    st.header("⚙️ Adatforrás és Szűrők")
+    st.header("Adatforrás és Szűrők")
     data_source = st.radio(
         "Válassz adatforrást:",
         ["Beépített RFM + Journey demó adat", "Saját CSV feltöltése"],
     )
+
+    effective_source = "demó"
 
     if data_source == "Saját CSV feltöltése":
         st.info(
@@ -92,22 +93,24 @@ with st.sidebar:
         if uploaded_file is not None:
             try:
                 raw_df = load_csv_journeys(uploaded_file)
+                effective_source = "feltöltött CSV"
                 st.success(
                     f"CSV betöltve: {len(raw_df)} sor, "
                     f"{raw_df['path'].nunique()} egyedi útvonal."
                 )
             except Exception as exc:
                 st.error(f"CSV betöltési hiba: {exc}")
+                st.info("A rendszer a beépített demó adatokra váltott vissza.")
                 raw_df = generate_demo_data()
         else:
-            st.warning("Tölts fel egy CSV-t, addig a demó adatok láthatók.")
+            st.warning("Nincs CSV feltöltve; a beépített demó adatok láthatók.")
             raw_df = generate_demo_data()
     else:
         raw_df = generate_demo_data()
 
     # RFM szegmens szűrő
     segments = ["Összes szegmens"] + sorted(raw_df["rfm_segment"].unique().tolist())
-    selected_segment = st.selectbox("🎯 RFM Szegmens szűrő:", segments)
+    selected_segment = st.selectbox("RFM Szegmens szűrő:", segments)
 
     if selected_segment != "Összes szegmens":
         filtered_df = raw_df[raw_df["rfm_segment"] == selected_segment].copy()
@@ -115,12 +118,12 @@ with st.sidebar:
         filtered_df = raw_df.copy()
 
     st.divider()
-    st.header("🧠 Markov Motor Beállítások")
+    st.header("Markov Motor Beállítások")
     k_order = st.selectbox("Lánc-rend (k):", [1, 2, 3], index=1)
     collapse_loops = st.checkbox("Ötvöző hurkok eltávolítása (RLE)", value=True)
     st.caption(
-        "Visszamenőleges ablak (lookback): nem állítható — az aggregált bemeneti adatok "
-        "nem Tartalmaznak Timestamp-ot, ezért az útvonalak dátumi szűrése nem megvalósítható."
+        "Visszamenőleges ablak (lookback): nem állítható, mert az aggregált bemeneti adatok "
+        "nem tartalmaznak időbélyeget, így az útvonalak dátuma szerinti szűrése nem lehetséges."
     )
 
     min_edge_pct = st.slider(
@@ -130,32 +133,31 @@ with st.sidebar:
 
     st.divider()
     st.info(
-        "Adatforrás: "
-        + ("beépített demó (Parquet/inline)" if data_source == "Beépített RFM + Journey demó adat"
-           else "feltöltött CSV")
-        + ". Az üzemanyag- és nettófedezet-értékek a betöltő 25 000 Ft / 30 % alapértékekkel "
-        "kiegészítik, ha a CSV nem tartalmazza őket."
-    )
-    st.caption(
-        "A visszamenőleges ablak (lookback) nincs érvénybe levaile: az aggregált bemeneti adatok "
-        "nincs Timestamps, ezért az útvonalak datumi szerinti szűrése lehetséges lehetetlen."
+        f"Adatforrás: {effective_source}. A bevétel- és nettófedezet-értékek a betöltő "
+        "25 000 Ft / 30 % alapértékekkel kiegészítik, ha a forrás adat nem tartalmazza őket."
     )
 
 # -----------------------------------------------------------------------------
 # MOTOR INICIALIZÁLÁSA
 # -----------------------------------------------------------------------------
-engine = MarkovJourneyEngine(
-    filtered_df,
-    path_sep=">",
-    k=k_order,
-    collapse_loops=collapse_loops,
+@st.cache_data
+def compute_attribution_cached(filtered_df, k_order, collapse_loops):
+    """Gyorsítótárazott attribúciós számítás: az engine illesztése és a Removal Effect."""
+    engine = MarkovJourneyEngine(
+        filtered_df,
+        path_sep=">",
+        k=k_order,
+        collapse_loops=collapse_loops,
+    )
+    base_cvr = engine.solve_prob(weight_col="conversions")
+    base_margin = engine.solve_prob(weight_col="net_margin")
+    attr_df = engine.compute_attribution()
+    transition_counts = engine.transition_counts
+    return base_cvr, base_margin, attr_df, transition_counts, engine.all_states
+
+base_cvr, base_margin, attr_df, edge_counts, all_states = compute_attribution_cached(
+    filtered_df, k_order, collapse_loops
 )
-
-base_cvr = engine.solve_prob(weight_col="conversions")
-base_margin = engine.solve_prob(weight_col="net_margin")
-
-# Attribúciós táblázat (dabszám- + fedezet-alapú Removal Effect)
-attr_df = engine.compute_attribution()
 
 # Összesített metrikák KPI-khoz
 total_conv = int(filtered_df["conversions"].sum())
@@ -179,16 +181,16 @@ col1.metric("Összes vizsgált útvonal", f"{total_journeys:,}".replace(",", " "
 col2.metric(
     "Markov Alap Konverziós Ráta",
     f"{base_cvr * 100:.2f}%",
-    f"{total_conv:,} konverzió",
 )
+col2.caption(f"{total_conv:,} konverzió".replace(",", " "))
 col3.metric(
     "Összes bevétel", f"{int(total_rev):,} Ft".replace(",", " ")
 )
 col4.metric(
-    "Legkritikusabb híd (Top RE)",
+    "Legnagyobb eltávolítási hatású csatorna",
     top_channel,
-    f"-{top_re:.1f}% kiesés nélkülözve",
-    delta_color="inverse",
+    f"-{top_re:.1f}% konverziós hatás ha eltávolítva",
+    delta_color="normal",
 )
 
 st.divider()
@@ -197,20 +199,20 @@ st.divider()
 # FÜLEK
 # -----------------------------------------------------------------------------
 tab1, tab2, tab3 = st.tabs([
-    "📊 1. Attribúciós Igazságmérleg",
-    "🌊 2. Sankey Útvonalak & Átmeneti Mátrix",
-    "🧪 3. What-If & Sebesség Diagnosztika",
+    "Attribúció",
+    "Útvonalak",
+    "What-if",
 ])
 
 # =============================================================================
 # TAB 1: ATTRIBÚCIÓS IGAZSÁGMÉRLEG
 # =============================================================================
 with tab1:
-    st.subheader("Markov Removal Effect vs. Heurisztikus Modellek")
+    st.subheader("Markov Removal Effect — Volume és Nettó Fedezet")
     st.markdown(
         "A Removal Effect két dimenzióban jelenik meg: **Volume_RE** (konverziós darabszám kiesése) "
         "és **Margin_RE** (nettó fedezet kiesése). A különbség lekéri azokat a csatornákat, "
-        "ami sok kis diákot hoz vs. ami nagy árrésű kosarakat."
+        "ami sok kisebb konverziós darabot hoz vs. ami nagy árrésű kosarakat."
     )
 
     if attr_df.empty:
@@ -269,8 +271,7 @@ with tab2:
     with col_sankey:
         st.subheader("Vásárlói Forgalom (Sankey-gráf)")
         # Valós átmenet-darabszámok a becsolt láncból (nem P * journey_sorösszeg becslés).
-        edge_counts = engine.transition_counts
-        state_idx = {s: i for i, s in enumerate(engine.all_states)}
+        state_idx = {s: i for i, s in enumerate(all_states)}
 
         sources, targets, values, link_colors = [], [], [], []
         total_transitions = 0.0
@@ -295,14 +296,14 @@ with tab2:
 
         fig_sankey = go.Figure(data=[go.Sankey(
             node=dict(pad=18, thickness=20, line=dict(color="black", width=0.5),
-                      label=engine.all_states),
+                      label=all_states),
             link=dict(source=sources, target=targets, value=values, color=link_colors)
         )])
         fig_sankey.update_layout(height=520, margin=dict(l=10, r=10, t=20, b=20))
         st.plotly_chart(fig_sankey, use_container_width=True)
         st.caption(
             f"Élesszűrő: {min_edge_pct}% az összes átmenetből ({int(total_transitions):,} darab). "
-            "A szűrés elrejt hezeket, így a látható gráf eloszlása edust lehet."
+            "A szűrés elrejt néhány élt, ezért a látható gráf nem mutatja meg a teljes forgalmat."
         )
 
     with col_heat:
@@ -337,10 +338,10 @@ with tab2:
 # TAB 3: WHAT-IF & SEBESSÉG DIAGNOSTIKA
 # =============================================================================
 with tab3:
-    st.subheader("🧪 What-If Csatorna-kiesés Szimulátor")
+    st.subheader("What-If Csatorna-kiesés Szimulátor")
     st.markdown(
         "Válassz ki egy vagy több csatornát, és nézd meg, hogyan változik a konverziós ráta, "
-        "ha azok az érintkezési pontok kiesnek ( Removal Effect szimuláció)."
+        "ha az érintkezési pontokat eltávolítjuk (Removal Effect szimuláció)."
     )
 
     disabled_channels = st.multiselect(
@@ -358,25 +359,26 @@ with tab3:
     s_col1.metric(
         "Szimulált Konverziós Ráta",
         f"{sim_cvr * 100:.2f}%",
-        f"-{cvr_drop_pct:.1f}% az alaphoz képest",
-        delta_color="inverse",
+        f"{cvr_drop_pct:.1f}% csökkenés az alaphoz képest",
+        delta_color="normal",
     )
+    s_col1.caption(f"{int(round(lost_conversions)):,} konverzió veszteség".replace(",", " "))
     s_col2.metric(
         "Becsült Konverzió-kiesés",
-        f"-{int(round(lost_conversions)):,} db".replace(",", " "),
+        f"{int(round(lost_conversions)):,} db".replace(",", " "),
     )
     s_col3.metric(
         "Kockáztatott Bevétel (Removal Loss)",
-        f"-{int(round(lost_revenue)):,} Ft".replace(",", " "),
+        f"{int(round(lost_revenue)):,} Ft".replace(",", " "),
     )
 
     st.divider()
 
-    st.subheader("⚡ Konverziós Sebesség – Várható Lépésszám az Elnyelésig")
+    st.subheader("Várható Lépésszám az Elnyelésig")
     st.markdown(
         r"A fundamentális mátrix ($\mathbf{N} \cdot \mathbf{1}$) alapján: hány további lépésre van "
-        r"átlagosan szükség az adott állapotból a konverzióig/kilépésig. Minél magasabb az érték, "
-        r"annál több 'fricció' (lassulás) jelent az adott érintkezési pontnál."
+        r"átlagosan szükség az adott állapotból a konverzióig vagy a kilépésig. Ez a lépésszám, "
+        r"nem idő mértéke, és nem jelzi egyedi csatorna 'fricción'át."
     )
     steps_dict = engine.expected_steps_to_absorption()
     if steps_dict:
@@ -388,7 +390,7 @@ with tab3:
             x="Várható lépésszám",
             y="Állapot",
             orientation="h",
-            title="Top 15 legtöbben lépést igénylő állapot (fricció pontok)",
+            title="Top 15 legtöbben lépést igénylő állapot",
         )
         fig_steps.update_layout(height=420, margin=dict(l=10, r=10, t=40, b=20))
         st.plotly_chart(fig_steps, use_container_width=True)

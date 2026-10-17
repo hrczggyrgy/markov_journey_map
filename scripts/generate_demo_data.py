@@ -75,19 +75,22 @@ def generate() -> None:
     journeys = pd.DataFrame(rows)
     duckdb.execute(f"COPY (SELECT * FROM journeys) TO '{DATA_DIR}/customer_journeys.parquet' (FORMAT PARQUET)")
 
-    # 3. transaction_baskets_mba.parquet — basket path_id matches journey ids;
-    # bundle_type and is_cross_sell_bundle are consistent with each other.
-    journey_ids = [f"J{i:07d}" for i in range(1, len(journeys) + 1)]
-    basket_ids = rng.choice(journey_ids, n, replace=True)
-    is_cross = rng.choice([True, False], n, p=[0.35, 0.65])
+    # 3. transaction_baskets_mba.parquet — each basket references exactly one
+    # converting journey (path_id matches a journey marked conversions=1). One
+    # basket per journey; no replacement sampling so the later merge cannot
+    # duplicate journey rows or inflate revenue.
+    converting_journey_ids = journeys.loc[journeys["conversions"] == 1, "path_id"].tolist()
+    n_baskets = min(n, len(converting_journey_ids))
+    basket_ids = rng.choice(converting_journey_ids, size=n_baskets, replace=False)
+    is_cross = rng.choice([True, False], n_baskets, p=[0.35, 0.65])
     bundle_type = np.where(is_cross, "Cross-sell", "None")
     baskets = pd.DataFrame({
-        "order_id": [f"O{i:06d}" for i in range(n)],
+        "order_id": [f"O{i:06d}" for i in range(n_baskets)],
         "path_id": basket_ids,
         "is_cross_sell_bundle": is_cross,
         "bundle_type": bundle_type,
-        "net_margin": rng.exponential(18000, n).round(0),
-        "anchor_category": rng.choice(["Electronics", "Fashion", "Home", "Beauty"], n),
+        "net_margin": rng.exponential(18000, n_baskets).round(0),
+        "anchor_category": rng.choice(["Electronics", "Fashion", "Home", "Beauty"], n_baskets),
     })
     duckdb.execute(f"COPY (SELECT * FROM baskets) TO '{DATA_DIR}/transaction_baskets_mba.parquet' (FORMAT PARQUET)")
 

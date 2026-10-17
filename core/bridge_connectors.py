@@ -80,11 +80,20 @@ def enrich_journeys_with_mba_rules(
 
     orders_mba_df oszlopai: ['path_id', 'is_cross_sell_bundle', 'net_margin', 'anchor_category']
     """
+    # Szerződés: minden journey és minden basket legfeljebb egyszer fordulhat elő
+    # path_id szerint, így az egy-az-egyhez (one-to-one) join megakadályozza az
+    # observations duplikálódását és a bevétel-tömegeltetésüket.
+    if journeys_df["path_id"].duplicated().any():
+        raise ValueError("journeys_df contains duplicate path_id values")
+    if orders_mba_df["path_id"].duplicated().any():
+        raise ValueError("orders_mba_df contains duplicate path_id values")
+
     merged = journeys_df.merge(
         orders_mba_df,
         on="path_id",
         how="left",
         suffixes=("", "_mba"),
+        validate="one_to_one",
     )
 
     # Net margin: journeys-ből preferred, ha nem voller akkor MBA-ből

@@ -15,9 +15,9 @@ from core.markov_engine import MarkovJourneyEngine
 from core.data_loader import load_mba_rules, load_aggregated_edges
 from core.bridge_connectors import enrich_journeys_with_mba_rules
 
-st.set_page_config(page_title="Market Basket MBA", page_icon="🛒", layout="wide")
+st.set_page_config(page_title="Market Basket MBA", layout="wide")
 
-st.title("🛒 Market Basket (MBA) → Markov")
+st.title("Market Basket (MBA) → Markov")
 st.markdown(
     "**MBA → Markov integráció.** Az útvonalakat felcímkézzük az MBA-kosár elemzéssel "
     "(Cross-sell bundle / Egytermékes), és külön vizsgáljuk, mely marketing-útvonal "
@@ -41,9 +41,9 @@ if journeys_raw.empty or mba_df.empty:
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 1️⃣ MBA áttekintés
+# 1. MBA áttekintés
 # -----------------------------------------------------------------------------
-st.subheader("1️⃣ MBA kosár-elemzés áttekintés")
+st.subheader("1. MBA kosár-elemzés áttekintés")
 cs = mba_df["is_cross_sell_bundle"].value_counts()
 col1, col2, col3 = st.columns(3)
 col1.metric("Összes rendelés", f"{len(mba_df):,}")
@@ -60,9 +60,9 @@ fig_bundle.update_layout(height=350, margin=dict(l=10, r=10, t=40, b=20))
 st.plotly_chart(fig_bundle, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# 2️⃣ Útvonalak enrichment-je MBA-val
+# 2. Útvonalak enrichment-je MBA-val
 # -----------------------------------------------------------------------------
-st.subheader("2️⃣ Útvonalak enrichment-je MBA kosár-sorral")
+st.subheader("2. Útvonalak enrichment-je MBA kosár-sorral")
 merged = enrich_journeys_with_mba_rules(journeys_raw, mba_df)
 
 st.dataframe(
@@ -72,9 +72,9 @@ st.dataframe(
 )
 
 # -----------------------------------------------------------------------------
-# 3️⃣ Markov illesztés külön cross-sell vs egytermékes kosarakra
+# 3. Markov illesztés külön cross-sell vs egytermékes kosarakra
 # -----------------------------------------------------------------------------
-st.subheader("3️⃣ Markov konverziós ráta: Cross-sell vs. Egytermékes kosár")
+st.subheader("3. Markov konverziós ráta: Cross-sell vs. Egytermékes kosár")
 
 def _cvr(df_part):
     if df_part.empty:
@@ -95,9 +95,9 @@ c2.metric("Egytermékes konverziós ráta", f"{cvr_non*100:.2f}%", f"{n_non:,} �
 c3.metric("Különbözet (pp)", f"{(cvr_cs-cvr_non)*100:+.2f} pp")
 
 # -----------------------------------------------------------------------------
-# 4️⃣ Sparse Markov motor cross-sell súlyozott Removal Effect
+# 4. Sparse Markov motor cross-sell súlyozott Removal Effect
 # -----------------------------------------------------------------------------
-st.subheader("4️⃣ Érték-súlyozott Removal Effect (cross-sell konverziókra)")
+st.subheader("4. Érték-súlyozott Removal Effect (cross-sell konverziókra)")
 st.markdown(
     "Csak a **cross_sell_conversions** oszlopot használjuk súlyként, így a Removal Effect "
     "megjeleníti, melyik csatorna kiesése veszíti le a legtöbb keresztértékesítést."

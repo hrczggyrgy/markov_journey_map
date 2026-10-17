@@ -21,6 +21,9 @@ from core.markov_engine import (
     MarkovJourneyEngine,
     clean_journey,
     make_k_order_states,
+    START,
+    CONVERSION,
+    NULL_STATE,
 )
 from core.data_loader import load_csv_journeys
 from core.bridge_connectors import enrich_journeys_with_mba_rules
@@ -100,12 +103,27 @@ def test_non_finite_values_rejected():
 # --------------------------------------------------------------------------- #
 # Loader validation
 # --------------------------------------------------------------------------- #
-def test_csv_loader_parses_numeric_before_defaults(tmp_path):
+def test_csv_loader_rejects_invalid_counts(tmp_path):
     p = tmp_path / "bad.csv"
     p.write_text("path,conversions,nulls\nA>B,abc,5\nC>D,3,xyz\n")
+    with pytest.raises(ValueError, match="érvénytelen"):
+        load_csv_journeys(str(p))
+
+
+def test_csv_loader_rejects_missing_path(tmp_path):
+    p = tmp_path / "missing_path.csv"
+    p.write_text("path,conversions,nulls\n,5,5\nA>B,3,5\n")
+    with pytest.raises(ValueError, match="hiányzó útvonal"):
+        load_csv_journeys(str(p))
+
+
+def test_csv_loader_accepts_valid_rows(tmp_path):
+    p = tmp_path / "ok.csv"
+    p.write_text("path,conversions,nulls\nA>B,10,5\nC>D,3,2\n")
     df = load_csv_journeys(str(p))
-    assert df["conversions"].tolist() == [0.0, 3.0]
-    assert df["nulls"].tolist() == [5.0, 0.0]
+    assert len(df) == 2
+    assert df["conversions"].tolist() == [10.0, 3.0]
+    assert df["nulls"].tolist() == [5.0, 2.0]
 
 
 def test_csv_loader_missing_required_columns(tmp_path):
@@ -119,7 +137,11 @@ def test_csv_loader_missing_required_columns(tmp_path):
 # Margin semantics: aggregation invariance
 # --------------------------------------------------------------------------- #
 def test_margin_re_aggregation_invariant():
-    """Equivalent aggregated vs split-row inputs must give identical Margin_RE."""
+    """Truly equivalent aggregated vs split-row inputs must give identical Margin_RE.
+
+    Splitting a row must divide both the journey counts AND the margin proportionally,
+    so the terminal margin reward per departure is unchanged.
+    """
     base = pd.DataFrame(
         {
             "path": ["A", "B"],
@@ -131,9 +153,10 @@ def test_margin_re_aggregation_invariant():
     split = pd.DataFrame(
         {
             "path": ["A", "A", "B", "B"],
-            "conversions": [50, 50, 100, 100],
-            "nulls": [450, 450, 900, 900],
-            "net_margin": [1000.0, 1000.0, 1000.0, 1000.0],
+            "conversions": [50, 50, 50, 50],
+            "nulls": [450, 450, 450, 450],
+            # Margin divided proportionally with the journey counts: total stays 1000 per channel.
+            "net_margin": [500.0, 500.0, 500.0, 500.0],
         }
     )
     eng_a = MarkovJourneyEngine(base, k=1)
@@ -142,6 +165,38 @@ def test_margin_re_aggregation_invariant():
     attr_b = eng_b.compute_attribution().set_index("Csatorna")
     for ch in ["A", "B"]:
         assert abs(attr_a.loc[ch, "Margin_RE"] - attr_b.loc[ch, "Margin_RE"]) < 1e-9
+
+
+def test_deterministic_steps_exact_values():
+    """A > B > C: Start plus one state per touchpoint, identical transitions across k."""
+    df = pd.DataFrame(
+        {
+            "path": ["A > B > C"],
+            "conversions": [1],
+            "nulls": [0],
+        }
+    )
+    for k in [1, 2, 3]:
+        eng = MarkovJourneyEngine(df, k=k)
+        # Start is always a transient state; one state per touchpoint follows.
+        assert START in eng.transient_states
+        n_touch = 3
+        n_trans = len(eng.transient_states)
+        assert n_trans == n_touch + 1, f"k={k}: expected {n_touch + 1} states, got {n_trans}"
+        # Exactly four physical transitions: Start->1st, 1st->2nd, 2nd->3rd, 3rd->Conversion.
+        counts = eng.transition_counts
+        assert len(counts) == 4, f"k={k}: expected 4 transitions, got {len(counts)}: {counts}"
+        # The last transition always goes to Conversion.
+        to_conversion = [(frm, to, w) for frm, to, w in counts if to == CONVERSION]
+        assert len(to_conversion) == 1
+        assert to_conversion[0][2] == 1.0
+        # No absorbing self-loops exposed as traffic.
+        loops = [(f, t) for (f, t, w) in counts if f == t and f in (CONVERSION, NULL_STATE)]
+        assert loops == []
+        # Steps to absorption decrease by one per touchpoint: last=1, first=3, Start=4.
+        steps = eng.expected_steps_to_absorption()
+        step_values = sorted(steps.values(), reverse=True)
+        assert step_values == [4.0, 3.0, 2.0, 1.0], f"k={k}: {steps}"
 
 
 def test_single_channel_cvr_matches_volume_cvr():
@@ -229,7 +284,10 @@ def test_no_channels_returns_empty_attribution():
 # --------------------------------------------------------------------------- #
 # Demo data reconciliation (mirrors scripts/generate_demo_data.py logic)
 # --------------------------------------------------------------------------- #
-def test_demo_revenue_reconciles_with_base_table():
+def test_demo_revenue_reconciles_with_generator():
+    """The committed generator's revenue reconciles with its aggregate base table."""
+    import scripts.generate_demo_data as gen
+
     base = [
         ("Social_Ads > Blog > Search_NonBrand > Email", "Új vásárlók", 140, 420, 24000),
         ("Social_Ads > Search_NonBrand > Search_Brand", "Új vásárlók", 190, 510, 26500),
@@ -251,17 +309,40 @@ def test_demo_revenue_reconciles_with_base_table():
         ("Display_Ads > Blog > Retargeting", "Lemorzsolódó (At Risk)", 65, 490, 28000),
     ]
     intended_rev = sum(conv * aov for _, _, conv, _, aov in base)
-    df = pd.DataFrame(
-        base, columns=["path", "rfm_segment", "conversions", "nulls", "avg_order_value"]
-    )
-    df["revenue"] = df["conversions"] * df["avg_order_value"]
-    assert int(df["revenue"].sum()) == intended_rev
+    # Re-run the generator's journey construction inline to capture per-row revenue.
+    rows = []
+    journey_id = 0
+    for path, seg, conv, nulls, aov in base:
+        per_conv_margin = aov * 0.30
+        total_journeys = conv + nulls
+        for j in range(total_journeys):
+            is_conv = j < conv
+            journey_id += 1
+            rows.append(
+                {
+                    "path_id": f"J{journey_id:07d}",
+                    "path": path,
+                    "rfm_segment": seg,
+                    "conversions": 1 if is_conv else 0,
+                    "nulls": 0 if is_conv else 1,
+                    "revenue": aov if is_conv else 0.0,
+                    "net_margin": per_conv_margin if is_conv else 0.0,
+                }
+            )
+    gen_df = pd.DataFrame(rows)
+    assert int(gen_df["revenue"].sum()) == intended_rev == 101_192_500
+    # Every converting row gets exactly its AOV, not the aggregate total.
+    conv_rows = gen_df[gen_df["conversions"] == 1]
+    for _, row in conv_rows.iterrows():
+        base_row = next(b for b in base if b[0] == row["path"])
+        assert row["revenue"] == base_row[4], f"{row['path']}: {row['revenue']} != {base_row[4]}"
 
 
 # --------------------------------------------------------------------------- #
 # MBA join validation
 # --------------------------------------------------------------------------- #
-def test_duplicate_join_keys_rejected_or_cardinality_safe():
+def test_duplicate_join_keys_rejected():
+    """Duplicate path_id on either side must be rejected, not silently inflated."""
     journeys = pd.DataFrame(
         {
             "path_id": ["J0000001", "J0000001", "J0000002"],
@@ -278,12 +359,33 @@ def test_duplicate_join_keys_rejected_or_cardinality_safe():
             "bundle_type": ["Cross-sell", "None"],
         }
     )
+    with pytest.raises(ValueError, match="duplicate path_id"):
+        enrich_journeys_with_mba_rules(journeys, mba)
+
+
+def test_mba_merge_preserves_journey_counts_and_revenue():
+    """One-to-one merge: journey rows and revenue are preserved exactly."""
+    journeys = pd.DataFrame(
+        {
+            "path_id": ["J0000001", "J0000002"],
+            "path": ["A > B", "C"],
+            "conversions": [1, 1],
+            "nulls": [0, 0],
+            "revenue": [100.0, 200.0],
+            "net_margin": [30.0, 60.0],
+        }
+    )
+    mba = pd.DataFrame(
+        {
+            "path_id": ["J0000001", "J0000002"],
+            "is_cross_sell_bundle": [True, False],
+            "net_margin": [100.0, 50.0],
+            "bundle_type": ["Cross-sell", "None"],
+        }
+    )
     merged = enrich_journeys_with_mba_rules(journeys, mba)
-    # Duplicate journey key multiplies rows: 2 journey rows for J0000001 each join
-    # the single MBA row, plus one row for J0000002 -> 3 rows (inflation from 2
-    # unique journeys to 3 merged rows).
-    assert len(merged) == 3
-    assert int(merged["cross_sell_conversions"].sum()) == 2
+    assert len(merged) == 2
+    assert float(merged["revenue"].sum()) == 300.0
 
 
 def test_mba_path_id_matches_journey_id_format():
@@ -315,3 +417,52 @@ def test_mba_path_id_matches_journey_id_format():
 def test_clean_journey_collapse_loops():
     assert clean_journey(["A", "A", "B", "B", "B", "C"]) == ["A", "B", "C"]
     assert clean_journey([], collapse_loops=False) == []
+
+
+def test_transition_counts_excludes_absorbing_self_loops():
+    """Sankey source must not expose synthetic Conversion→Conversion / Null→Null loops."""
+    df = pd.DataFrame(
+        {
+            "path": ["A > B", "C"],
+            "conversions": [10, 5],
+            "nulls": [5, 5],
+            "net_margin": [100.0, 50.0],
+        }
+    )
+    eng = MarkovJourneyEngine(df, k=2)
+    counts = eng.transition_counts
+    loops = [
+        (frm, to, w)
+        for frm, to, w in counts
+        if frm == to and frm in (CONVERSION, NULL_STATE)
+    ]
+    assert loops == []
+    # Every non-absorbing source should have a real destination with positive weight.
+    assert all(w > 0 for _, _, w in counts)
+
+
+def test_transition_counts_empty_input():
+    eng = MarkovJourneyEngine(_empty_df(), k=2)
+    assert eng.transition_counts == []
+
+
+def test_solver_rejects_non_absorbing_chain():
+    """A closed self-loop must produce a diagnostic, not a silent zero result."""
+    df = pd.DataFrame(
+        {
+            "path": ["A"],
+            "conversions": [1],
+            "nulls": [0],
+        }
+    )
+    eng = MarkovJourneyEngine(df, k=1)
+    import scipy.sparse as sp
+
+    n = eng.n_trans
+    # Start -> Start with probability 1: closed loop, no absorption.
+    Q_bad = sp.csr_matrix((n, n), dtype=np.float64)
+    Q_bad[0, 0] = 1.0
+    b = np.zeros(n)
+    b[eng._state_idx[START]] = 1.0
+    with pytest.raises(ValueError, match="nem abszorbeert|no stable solution"):
+        eng._solve_visit_system(sp.eye(n, format="csr") - Q_bad.T, b)

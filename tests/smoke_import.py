@@ -26,4 +26,11 @@ df = __import__("pandas").DataFrame(
 eng = MarkovJourneyEngine(df, k=2)
 assert eng.solve_prob(weight_col="conversions") >= 0.0
 assert not eng.compute_attribution().empty
+# Sankey path: transition_counts must be accessible without AttributeError
+# and must exclude synthetic absorbing self-loops.
+counts = eng.transition_counts
+assert all(w > 0 for _, _, w in counts)
+assert not any(
+    frm == to and frm in ("(Conversion)", "(Null)") for frm, to, _ in counts
+)
 print("Import smoke test: OK")

@@ -43,9 +43,9 @@ markov_journey/
 ## Gyorsindítás
 
 ```bash
-# Klónozd a repot (cserélj le a ténylees repository URL-jevel)
-git clone https://github.com/you/markov_journey.git
-cd markov_journey
+# Klónozd a repot
+git clone https://github.com/hrczggyrgy/markov_journey_map.git
+cd markov_journey_map
 
 # Virtuális környezet
 python -m venv .venv
