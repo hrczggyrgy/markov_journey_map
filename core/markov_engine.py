@@ -429,15 +429,10 @@ class MarkovJourneyEngine:
         n = self.n_trans
         I = sp.eye(n, format="csr")
         ones = np.ones(n)
-        try:
-            with warnings.catch_warnings():
-                warnings.simplefilter("error", spla.MatrixRankWarning)
-                x = spla.spsolve(I - self.Q_conv, ones)
-        except Exception:
-            x = spla.lsqr(I - self.Q_conv, ones, atol=1e-10, btol=1e-10)[0]
+        # Egy validated sparse solverrel oldjuk meg (I - Q) x = 1; azonos ellenőrzések
+        # futnak le mint a látogatási vektor esetében.
+        x = self._solve_visit_system(I - self.Q_conv, ones)
         x = np.asarray(x).flatten()
-        if not np.all(np.isfinite(x)):
-            x = np.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
         return {
             state: float(x[self._state_idx[state]])
             for state in self.transient_states

@@ -466,3 +466,18 @@ def test_solver_rejects_non_absorbing_chain():
     b[eng._state_idx[START]] = 1.0
     with pytest.raises(ValueError, match="nem abszorbeert|no stable solution"):
         eng._solve_visit_system(sp.eye(n, format="csr") - Q_bad.T, b)
+
+
+# --------------------------------------------------------------------------- #
+# Application-level smoke tests
+# --------------------------------------------------------------------------- #
+def test_default_app_renders_without_exception():
+    """The app.py entry point must complete without uncaught exceptions."""
+    try:
+        from streamlit.testing.v1 import AppTest
+    except ImportError:
+        pytest.skip("streamlit.testing not available")
+
+    app_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
+    at = AppTest.from_file(app_path).run(timeout=60)
+    assert len(at.exception) == 0, f"App raised: {at.exception}"

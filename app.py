@@ -153,9 +153,9 @@ def compute_attribution_cached(filtered_df, k_order, collapse_loops):
     base_margin = engine.solve_prob(weight_col="net_margin")
     attr_df = engine.compute_attribution()
     transition_counts = engine.transition_counts
-    return base_cvr, base_margin, attr_df, transition_counts, engine.all_states
+    return base_cvr, base_margin, attr_df, transition_counts, engine.all_states, engine
 
-base_cvr, base_margin, attr_df, edge_counts, all_states = compute_attribution_cached(
+base_cvr, base_margin, attr_df, edge_counts, all_states, engine = compute_attribution_cached(
     filtered_df, k_order, collapse_loops
 )
 
@@ -356,10 +356,11 @@ with tab3:
     lost_revenue = total_rev * (cvr_drop_pct / 100.0)
 
     s_col1, s_col2, s_col3 = st.columns(3)
+    delta_label = f"{-cvr_drop_pct:.1f}%" if cvr_drop_pct > 0 else "0.0%"
     s_col1.metric(
         "Szimulált Konverziós Ráta",
         f"{sim_cvr * 100:.2f}%",
-        f"{cvr_drop_pct:.1f}% csökkenés az alaphoz képest",
+        delta_label,
         delta_color="normal",
     )
     s_col1.caption(f"{int(round(lost_conversions)):,} konverzió veszteség".replace(",", " "))

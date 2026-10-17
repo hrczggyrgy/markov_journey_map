@@ -72,27 +72,31 @@ st.dataframe(
 )
 
 # -----------------------------------------------------------------------------
-# 3. Markov illesztés külön cross-sell vs egytermékes kosarakra
+# 3. Kosár-szerkezet a konvertáló rendelések között
 # -----------------------------------------------------------------------------
-st.subheader("3. Markov konverziós ráta: Cross-sell vs. Egytermékes kosár")
+st.subheader("3. Cross-sell megosztás a konvertáló rendelések között")
 
-def _cvr(df_part):
-    if df_part.empty:
-        return 0.0, 0
-    conv = float(df_part["conversions"].sum())
-    nulls = float(df_part["nulls"].sum())
-    return conv / (conv + nulls) if (conv + nulls) > 0 else 0.0, int(conv + nulls)
+# A generált adatban a kosár csak konvertáló útvonalakhoz csatolódik, ezért a
+# cross-sell cohort konverziós ráta feltétlenül 100% lenne — az nem tájékoztató.
+# Ehelyett a cross-sell megosztását a konvertáló rendelések között mutatjuk, és
+# különbszét tesszük a megerősített egytermékes és a nem csatolt útvonalakat.
+conv_mask = merged["conversions"] == 1
+n_converted = int(conv_mask.sum())
+cs_mask = conv_mask & (merged["is_cross_sell_bundle"] == True)
+single_mask = conv_mask & (merged["is_cross_sell_bundle"] == False)
+unmatched_mask = conv_mask & merged["is_cross_sell_bundle"].isna()
 
-cs_df = merged[merged["is_cross_sell_bundle"] == True]
-non_cs_df = merged[merged["is_cross_sell_bundle"] != True]
+n_cs = int(cs_mask.sum())
+n_single = int(single_mask.sum())
+n_unmatched = int(unmatched_mask.sum())
+cs_share = (n_cs / n_converted * 100) if n_converted > 0 else 0.0
+single_share = (n_single / n_converted * 100) if n_converted > 0 else 0.0
 
-cvr_cs, n_cs = _cvr(cs_df)
-cvr_non, n_non = _cvr(non_cs_df)
-
-c1, c2, c3 = st.columns(3)
-c1.metric("Cross-sell konverziós ráta", f"{cvr_cs*100:.2f}%", f"{n_cs:,} útvonal")
-c2.metric("Egytermékes konverziós ráta", f"{cvr_non*100:.2f}%", f"{n_non:,} útvonal")
-c3.metric("Különbözet (pp)", f"{(cvr_cs-cvr_non)*100:+.2f} pp")
+c1, c2, c3, c4 = st.columns(4)
+c1.metric("Konvertáló rendelések", f"{n_converted:,}")
+c2.metric("Cross-sell rendelések", f"{n_cs:,}", f"{cs_share:.1f}% share")
+c3.metric("Egytermékes rendelések", f"{n_single:,}", f"{single_share:.1f}% share")
+c4.metric("Nem csatolt útvonalak", f"{n_unmatched:,}")
 
 # -----------------------------------------------------------------------------
 # 4. Sparse Markov motor cross-sell súlyozott Removal Effect

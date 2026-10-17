@@ -93,16 +93,26 @@ def load_csv_journeys(
 
     # Érvényességi ellenőrzések ELSŐSORban, a string konverzió elött:
     # - hiányzó útvonal (NaN) nem láthatóaként "nan" csatorná váljon
+    # - üres vagy szeparátoros csakból álló útvonal nem jelent semmit
     # - konverziós/kilépési számok végleges, nem negatív, nem negatív
-    rejected = []
+    path_str = df["path"].astype(str)
+
+    def _has_meaningful_path(p) -> bool:
+        s = str(p)
+        return bool([t for t in s.split(">") if t.strip()])
+
+    path_is_empty = ~path_str.map(_has_meaningful_path)
     path_is_missing = df["path"].isna()
     counts_bad = conversions_num.isna() | nulls_num.isna() | ~np.isfinite(conversions_num) | ~np.isfinite(nulls_num) | (conversions_num < 0) | (nulls_num < 0)
-    bad_rows = path_is_missing | counts_bad
+    bad_rows = path_is_missing | path_is_empty | counts_bad
+    rejected = []
     if bad_rows.any():
         for idx in df.index[bad_rows]:
             reasons = []
             if path_is_missing.loc[idx]:
                 reasons.append("hiányzó útvonal")
+            if path_is_empty.loc[idx]:
+                reasons.append(f"üres vagy csak szeparátorból álló útvonal: {path_str.loc[idx]!r}")
             c = conversions_num.loc[idx]
             n = nulls_num.loc[idx]
             if pd.isna(c) or not np.isfinite(c) or c < 0:
@@ -130,9 +140,12 @@ def load_csv_journeys(
 
     df["revenue"] = pd.to_numeric(df["revenue"], errors="coerce").astype(float)
     df["net_margin"] = pd.to_numeric(df["net_margin"], errors="coerce").astype(float)
-    # Pénzügyi értékek véglegességének ellenőrzése.
-    if df["revenue"].isna().any() or df["net_margin"].isna().any():
-        bad_idx = df.index[df["revenue"].isna() | df["net_margin"].isna()].tolist()
+    # Pénzügyi értékek véglegességének ellenőrzése: NaN vagy végtelen érték nem
+    # elfogadható, de a negatív pénzügyi összeg (pl. visszafizetés) engedélyezett.
+    rev_bad = df["revenue"].isna() | ~np.isfinite(df["revenue"])
+    mar_bad = df["net_margin"].isna() | ~np.isfinite(df["net_margin"])
+    if rev_bad.any() or mar_bad.any():
+        bad_idx = df.index[rev_bad | mar_bad].tolist()
         raise ValueError(
             "Érvénytelen pénzügyi érték a következő sorokban: "
             + ", ".join(map(str, bad_idx[:10]))
