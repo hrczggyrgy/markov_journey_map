@@ -1,4 +1,4 @@
-"""Integrációs modulok: Markov <-> MMM, RFM <-> Markov, MBA <-> Markov."""
+"""Integration modules: Markov <-> MMM, RFM <-> Markov, MBA <-> Markov."""
 
 from __future__ import annotations
 
@@ -13,17 +13,17 @@ def export_markov_priors_for_mmm(
     spend_dict: dict,
     confidence_weight: float = 0.3,
 ) -> dict:
-    """Markov-alapú ROAS-ből Bayes-i prior paramétereket generál az MMM-hez.
+    """Generate Bayesian prior parameters from Markov ROAS for MMM.
 
-    Visszatér egy dict-el: channel -> {markov_roas_estimate, prior_distribution, mu, sigma}
+    Returns a dict: channel -> {markov_roas_estimate, prior_distribution, mu, sigma}
     """
     priors = {}
     for _, row in attr_df.iterrows():
-        ch = row["Csatorna"]
+        ch = row["Channel"]
         if ch not in spend_dict or spend_dict[ch] <= 0:
             continue
 
-        markov_roas = row.get("Markov Bevétel (Ft)", row.get("revenue_attributed", 0)) / spend_dict[ch]
+        markov_roas = row.get("Markov Revenue (Ft)", row.get("revenue_attributed", 0)) / spend_dict[ch]
 
         sigma = max(0.15, 1.0 - confidence_weight)
         mu = np.log(max(markov_roas, 0.01)) - 0.5 * (sigma ** 2)
@@ -40,9 +40,9 @@ def export_markov_priors_for_mmm(
 def compare_rfm_transition_matrices(
     df: pd.DataFrame, seg_a: str, seg_b: str, path_sep: str = ">", k: int = 2
 ) -> pd.DataFrame:
-    """Két RFM szegmens átmeneti valószínűségi mátrixának különbsége (delta-P).
+    """Difference of two RFM segment transition probability matrices (delta-P).
 
-    Pozitív érték: a 'seg_a' szegmensben gyakoribb az adott lépés.
+    Positive value: the step is more common in 'seg_a'.
     """
     eng_a = MarkovJourneyEngine(
         df[df["rfm_segment"] == seg_a], path_sep=path_sep, k=k
@@ -56,7 +56,7 @@ def compare_rfm_transition_matrices(
     )
 
     def _prob_matrix(eng: MarkovJourneyEngine) -> pd.DataFrame:
-        # Q + R egyben: átmeneti állapotok sorai, minden célállapot oszlopban
+        # Q + R combined: rows are transient states, columns are all target states
         n_trans = eng.n_trans
         P = np.zeros((len(eng.all_states), len(eng.all_states)))
         Q = eng.Q_conv.toarray() if eng.Q_conv is not None else np.zeros((n_trans, n_trans))
@@ -76,13 +76,13 @@ def compare_rfm_transition_matrices(
 def enrich_journeys_with_mba_rules(
     journeys_df: pd.DataFrame, orders_mba_df: pd.DataFrame
 ) -> pd.DataFrame:
-    """Útvonalak összekötése az MBA kimenettel (cross-sell súlyozás).
+    """Enrich journeys with MBA output (cross-sell weighting).
 
-    orders_mba_df oszlopai: ['path_id', 'is_cross_sell_bundle', 'net_margin', 'anchor_category']
+    orders_mba_df columns: ['path_id', 'is_cross_sell_bundle', 'net_margin', 'anchor_category']
     """
-    # Szerződés: minden journey és minden basket legfeljebb egyszer fordulhat elő
-    # path_id szerint, így az egy-az-egyhez (one-to-one) join megakadályozza az
-    # observations duplikálódását és a bevétel-tömegeltetésüket.
+    # Contract: each journey and each basket may appear at most once per
+    # path_id, so the one-to-one join prevents observation duplication and
+    # revenue double-counting.
     if journeys_df["path_id"].duplicated().any():
         raise ValueError("journeys_df contains duplicate path_id values")
     if orders_mba_df["path_id"].duplicated().any():
@@ -96,7 +96,7 @@ def enrich_journeys_with_mba_rules(
         validate="one_to_one",
     )
 
-    # Net margin: journeys-ből preferred, ha nem voller akkor MBA-ből
+    # Net margin: journeys preferred, MBA as fallback
     if "net_margin_mba" in merged.columns:
         if "net_margin" not in merged.columns:
             merged["net_margin"] = merged["net_margin_mba"]

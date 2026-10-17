@@ -1,21 +1,20 @@
-"""Minta Parquet adatok generálása a data_lake/ mappába.
+"""Generate sample Parquet data into the data_lake/ folder.
 
-A generált adatok célja, hogy a Streamlit alkalmazás vizuálisan kifejezőek
-legyenek:
+The generated data is designed to make the Streamlit app visually expressive:
 
-* **Sankey**: gazdaságos, hierarchikus forgalom (Start → figyelmeztetés →
-  gondolkozás → konverzió → Konverzió/Null), thick és readable élekkel.
-* **Attribúciós bar chart**: Volume_RE és Margin_RE eltérő színekkel, különböző
-  csatornák getragenek (nincs egyformán 50%-os RE).
-* **Hőtérkép**: korlátozott állapotszám, értelmezhető átmeneti valószínűségek.
-* **What-if**: betekintő csatorna-kiesés (nincs 0%-os vagy 100%-os hatás).
+* **Sankey**: economical, hierarchical flow (Start → Awareness → Consideration →
+  Conversion → Conversion/Null), thick and readable edges.
+* **Attribution bar chart**: Volume_RE and Margin_RE in different colors, varied
+  channels (no uniform 50% RE).
+* **Heatmap**: bounded state count, interpretable transition probabilities.
+* **What-if**: insightful channel removal (no 0% or 100% effect).
 
-Bemeneti szerződés:
-* Egy sor = egy journey (path_id egyedi).
-* Konverziós journey kap AOV-értékű bevételt és proportionalis nettó
-  fedezetet; nem konverziós 0-t.
-* Negatív margin = visszafizetés/retúra, null margin = ingyenes kampány.
-* Nem minden konverziós journey kap MBA kosarat („Nem csatolt” kategória).
+Input contract:
+* One row = one journey (path_id is unique).
+* Converted journey gets AOV-value revenue and proportional net margin;
+  non-converted gets 0.
+* Negative margin = refund/return, null margin = free campaign.
+* Not every converted journey gets an MBA basket ("Unmatched" category).
 """
 
 from __future__ import annotations
@@ -32,30 +31,30 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data_lake")
 
 # --------------------------------------------------------------------------- #
-# Path-sablonok: (útvonal, rfm_segment, konverziók, nulls, aov, margin_multiplier)
+# Path templates: (path, rfm_segment, conversions, nulls, aov, margin_multiplier)
 #
-# A sablonokat úgy választjuk ki, hogy:
-#   * rövid útvonalak (1-2 érintkezés): nagy forgalom, alacsony CVR (figyelmeztetés)
-#   * középső útvonalak (3-4 érintkezés): közepes forgalom, magasabb CVR (gondolkozás)
-#   * hosszú útvonalak (5-6 érintkezés): alacsony forgalom, legmagasabb CVR (loyalty)
-#   * némely útvonal negatív margin-multiplikátorral (visszafizetés)
-#   * némely null-marginral (ingyenes kampány)
+# The templates are chosen so that:
+#   * short paths (1-2 touches): high volume, low CVR (awareness)
+#   * middle paths (3-4 touches): medium volume, higher CVR (consideration)
+#   * long paths (5-6 touches): low volume, highest CVR (loyalty)
+#   * some paths with negative margin multiplier (refund)
+#   * some with null margin (free campaign)
 BASE_JOURNEYS = [
-    # --- Figyelmeztetés (awareness): hosszú null-halozat, alacsony CVR ---
-    ("Social_Ads", "Új vásárlók", 40, 960, 15000, 1.0),
-    ("Display_Ads", "Új vásárlók", 25, 975, 14000, 1.0),
-    ("Social_Ads > Blog", "Új vásárlók", 15, 890, 18000, 1.0),
-    ("Display_Ads > Social_Ads", "Új vásárlók", 20, 480, 17000, 1.0),
-    ("Social_Ads > Search_NonBrand", "Új vásárlók", 35, 465, 20000, 1.0),
-    ("Display_Ads > Search_NonBrand", "Új vásárlók", 18, 482, 19000, 1.0),
-    # --- Gondolkozás (consideration): közepes forgalom, közepes CVR ---
-    ("Social_Ads > Blog > Search_NonBrand", "Potenciális hűségesek", 60, 340, 24000, 1.0),
-    ("Display_Ads > Social_Ads > Search_NonBrand", "Potenciális hűségesek", 50, 350, 25000, 1.0),
-    ("Search_NonBrand > Blog > Email", "Potenciális hűségesek", 70, 230, 31000, 1.0),
-    ("Social_Ads > Retargeting > Email", "Potenciális hűségesek", 55, 245, 26000, 1.0),
-    ("Blog > Search_NonBrand > Email", "Potenciális hűségesek", 65, 235, 30000, 1.0),
-    ("Display_Ads > Blog > Retargeting", "Potenciális hűségesek", 40, 360, 27000, 1.0),
-    # --- Konverzió (conversion): alacsony forgalom, magas CVR ---
+    # --- Awareness: long null volume, low CVR ---
+    ("Social_Ads", "New Customers", 40, 960, 15000, 1.0),
+    ("Display_Ads", "New Customers", 25, 975, 14000, 1.0),
+    ("Social_Ads > Blog", "New Customers", 15, 890, 18000, 1.0),
+    ("Display_Ads > Social_Ads", "New Customers", 20, 480, 17000, 1.0),
+    ("Social_Ads > Search_NonBrand", "New Customers", 35, 465, 20000, 1.0),
+    ("Display_Ads > Search_NonBrand", "New Customers", 18, 482, 19000, 1.0),
+    # --- Consideration: medium volume, medium CVR ---
+    ("Social_Ads > Blog > Search_NonBrand", "Potential Loyalists", 60, 340, 24000, 1.0),
+    ("Display_Ads > Social_Ads > Search_NonBrand", "Potential Loyalists", 50, 350, 25000, 1.0),
+    ("Search_NonBrand > Blog > Email", "Potential Loyalists", 70, 230, 31000, 1.0),
+    ("Social_Ads > Retargeting > Email", "Potential Loyalists", 55, 245, 26000, 1.0),
+    ("Blog > Search_NonBrand > Email", "Potential Loyalists", 65, 235, 30000, 1.0),
+    ("Display_Ads > Blog > Retargeting", "Potential Loyalists", 40, 360, 27000, 1.0),
+    # --- Conversion: low volume, high CVR ---
     ("Email > Search_Brand", "VIP (Champions)", 420, 80, 52000, 1.0),
     ("Search_Brand > Email", "VIP (Champions)", 310, 90, 48000, 1.0),
     ("Email", "VIP (Champions)", 260, 140, 45000, 1.0),
@@ -66,17 +65,17 @@ BASE_JOURNEYS = [
     ("Social_Ads > Blog > Search_NonBrand > Email > Search_Brand", "VIP (Champions)", 40, 60, 41000, 1.0),
     ("Direct", "VIP (Champions)", 180, 20, 43000, 1.0),
     ("Direct > Search_Brand", "VIP (Champions)", 95, 55, 40000, 1.0),
-    # --- Visszafizetés / retúra: negatív nettó fedezet ---
+    # --- Refund / return: negative net margin ---
     ("Email > Search_Brand", "VIP (Champions)", 8, 2, 52000, -1.0),
     ("Search_Brand", "VIP (Champions)", 5, 1, 49000, -1.0),
-    # --- Ingyenes kampány: nulla margin ---
-    ("Blog > Search_NonBrand > Email", "Potenciális hűségesek", 10, 10, 33000, 0.0),
-    ("Social_Ads > Blog", "Új vásárlók", 8, 12, 18000, 0.0),
-    # --- Lemorzsolódó / At Risk: alacsony CVR, magas null-halozat ---
-    ("Retargeting > Email > Search_Brand", "Lemorzsolódó (At Risk)", 130, 270, 36000, 1.0),
-    ("Social_Ads > Retargeting > Email", "Lemorzsolódó (At Risk)", 85, 315, 27500, 1.0),
-    ("Retargeting", "Lemorzsolódó (At Risk)", 30, 370, 25000, 1.0),
-    ("Email > Search_Brand", "Lemorzsolódó (At Risk)", 60, 440, 31000, 1.0),
+    # --- Free campaign: null margin ---
+    ("Blog > Search_NonBrand > Email", "Potential Loyalists", 10, 10, 33000, 0.0),
+    ("Social_Ads > Blog", "New Customers", 8, 12, 18000, 0.0),
+    # --- At Risk: low CVR, high null volume ---
+    ("Retargeting > Email > Search_Brand", "At Risk", 130, 270, 36000, 1.0),
+    ("Social_Ads > Retargeting > Email", "At Risk", 85, 315, 27500, 1.0),
+    ("Retargeting", "At Risk", 30, 370, 25000, 1.0),
+    ("Email > Search_Brand", "At Risk", 60, 440, 31000, 1.0),
 ]
 
 
@@ -91,7 +90,7 @@ def generate() -> None:
     rfm = pd.DataFrame({
         "user_id": [f"U{i:05d}" for i in range(n)],
         "rfm_segment": rng.choice(
-            ["Új vásárlók", "Potenciális hűségesek", "VIP (Champions)", "Lemorzsolódó (At Risk)"],
+            ["New Customers", "Potential Loyalists", "VIP (Champions)", "At Risk"],
             n, p=[0.4, 0.3, 0.2, 0.1],
         ),
         "clv_tier": rng.choice(["Bronze", "Silver", "Gold", "Platinum"], n, p=[0.4, 0.3, 0.2, 0.1]),
@@ -102,7 +101,7 @@ def generate() -> None:
     duckdb.execute(f"COPY (SELECT * FROM rfm) TO '{DATA_DIR}/unified_customers_rfm.parquet' (FORMAT PARQUET)")
 
     # ------------------------------------------------------------------ #
-    # 2. customer_journeys.parquet — egy sor = egy journey
+    # 2. customer_journeys.parquet — one row = one journey
     # ------------------------------------------------------------------ #
     rows = []
     journey_id = 0
@@ -126,12 +125,12 @@ def generate() -> None:
     duckdb.execute(f"COPY (SELECT * FROM journeys) TO '{DATA_DIR}/customer_journeys.parquet' (FORMAT PARQUET)")
 
     # ------------------------------------------------------------------ #
-    # 3. transaction_baskets_mba.parquet — csak konverziós journey-khoz
+    # 3. transaction_baskets_mba.parquet — converted journeys only
     # ------------------------------------------------------------------ #
     converting_journey_rows = journeys[journeys["conversions"] == 1].set_index("path_id")
 
-    # Csak egy részhalmaz konverziós journey kap kosarat (~70%), így az
-    # „Egytermékes” és a „Nem csatolt” kategóriák is jelentősek maradnak.
+    # Only ~70% of converted journeys get a basket, so the "Single-product" and
+    # "Unmatched" categories remain significant.
     n_baskets_target = int(len(converting_journey_rows) * 0.70)
     basket_ids = rng.choice(converting_journey_rows.index.tolist(), size=n_baskets_target, replace=False)
 
@@ -172,11 +171,11 @@ def generate() -> None:
     })
     duckdb.execute(f"COPY (SELECT * FROM spend) TO '{DATA_DIR}/channel_daily_spend_mmm.parquet' (FORMAT PARQUET)")
 
-    print(f"Demo Parquet fájlok generálva: {DATA_DIR}")
-    print(f"  journeyek: {len(journeys)} (konverziós: {int((journeys['conversions']==1).sum())})")
-    print(f"  kosarak: {len(baskets)} (cross-sell: {int(baskets['is_cross_sell_bundle'].sum())})")
-    print(f"  journeyek revenue osszege: {journeys['revenue'].sum():,.0f}")
-    print(f"  journeyek margin osszege: {journeys['net_margin'].sum():,.0f}")
+    print(f"Demo Parquet files generated: {DATA_DIR}")
+    print(f"  journeys: {len(journeys)} (converted: {int((journeys['conversions']==1).sum())})")
+    print(f"  baskets: {len(baskets)} (cross-sell: {int(baskets['is_cross_sell_bundle'].sum())})")
+    print(f"  journeys revenue total: {journeys['revenue'].sum():,.0f}")
+    print(f"  journeys margin total: {journeys['net_margin'].sum():,.0f}")
 
 
 if __name__ == "__main__":

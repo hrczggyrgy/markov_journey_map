@@ -1,7 +1,7 @@
-"""Market Basket (MBA) → Markov: kosár-affinitási útvonalak.
+"""Market Basket (MBA) → Markov: basket affinity paths.
 
-Összeköti az útvonalakat az MBA kimenettel, így külön vizsgálható, melyik kampány-
-útvonal készíti elő a magas Lift-értékű keresztértékesítési (cross-sell) kosarakat.
+Connects journeys to MBA output so that which campaign path leads to
+high-Lift cross-sell baskets can be analyzed separately.
 """
 
 from __future__ import annotations
@@ -19,13 +19,13 @@ st.set_page_config(page_title="Market Basket MBA", layout="wide")
 
 st.title("Market Basket (MBA) → Markov")
 st.markdown(
-    "**MBA → Markov integráció.** Az útvonalakat felcímkézzük az MBA-kosár elemzéssel "
-    "(Cross-sell bundle / Egytermékes), és külön vizsgáljuk, mely marketing-útvonal "
-    "vezeti a többtermékes, magas árrésű vásárlásokhoz."
+    "**MBA → Markov integration.** Journeys are labeled with MBA basket analysis "
+    "(Cross-sell bundle / Single-product), and separately examines which marketing "
+    "path leads to multi-product, high-margin purchases."
 )
 
 # -----------------------------------------------------------------------------
-# Adat betöltés
+# Data loading
 # -----------------------------------------------------------------------------
 import duckdb
 
@@ -37,32 +37,32 @@ journeys_raw = duckdb.execute(
 ).df()
 
 if journeys_raw.empty or mba_df.empty:
-    st.warning("Nincs elég adat.")
+    st.warning("Not enough data.")
     st.stop()
 
 # -----------------------------------------------------------------------------
-# 1. MBA áttekintés
+# 1. MBA overview
 # -----------------------------------------------------------------------------
-st.subheader("1. MBA kosár-elemzés áttekintés")
+st.subheader("1. MBA basket analysis overview")
 cs = mba_df["is_cross_sell_bundle"].value_counts()
 col1, col2, col3 = st.columns(3)
-col1.metric("Összes rendelés", f"{len(mba_df):,}")
-col2.metric("Cross-sell kosárak", f"{int(cs.get(True, 0)):,}")
-col3.metric("Átlagos nettó fedezet", f"{mba_df['net_margin'].mean():,.0f} Ft")
+col1.metric("Total orders", f"{len(mba_df):,}")
+col2.metric("Cross-sell baskets", f"{int(cs.get(True, 0)):,}")
+col3.metric("Average net margin", f"{mba_df['net_margin'].mean():,.0f} Ft")
 
 fig_bundle = px.pie(
     mba_df,
     names="bundle_type",
-    title="Kosártípus-eloszlás",
+    title="Basket type distribution",
     hole=0.4,
 )
 fig_bundle.update_layout(height=350, margin=dict(l=10, r=10, t=40, b=20))
 st.plotly_chart(fig_bundle, use_container_width=True)
 
 # -----------------------------------------------------------------------------
-# 2. Útvonalak enrichment-je MBA-val
+# 2. Journey enrichment with MBA
 # -----------------------------------------------------------------------------
-st.subheader("2. Útvonalak enrichment-je MBA kosár-sorral")
+st.subheader("2. Journey enrichment with MBA basket")
 merged = enrich_journeys_with_mba_rules(journeys_raw, mba_df)
 
 st.dataframe(
@@ -72,14 +72,14 @@ st.dataframe(
 )
 
 # -----------------------------------------------------------------------------
-# 3. Kosár-szerkezet a konvertáló rendelések között
+# 3. Basket structure among converted orders
 # -----------------------------------------------------------------------------
-st.subheader("3. Cross-sell megosztás a konvertáló rendelések között")
+st.subheader("3. Cross-sell share among converted orders")
 
-# A generált adatban a kosár csak konvertáló útvonalakhoz csatolódik, ezért a
-# cross-sell cohort konverziós ráta feltétlenül 100% lenne — az nem tájékoztató.
-# Ehelyett a cross-sell megosztását a konvertáló rendelések között mutatjuk, és
-# különbszét tesszük a megerősített egytermékes és a nem csatolt útvonalakat.
+# In the generated data, baskets are only attached to converted journeys, so the
+# cross-sell cohort conversion rate would necessarily be 100% — not informative.
+# Instead, we show the cross-sell share among converted orders and distinguish
+# confirmed single-product from unmatched journeys.
 conv_mask = merged["conversions"] == 1
 n_converted = int(conv_mask.sum())
 cs_mask = conv_mask & (merged["is_cross_sell_bundle"] == True)
@@ -93,29 +93,29 @@ cs_share = (n_cs / n_converted * 100) if n_converted > 0 else 0.0
 single_share = (n_single / n_converted * 100) if n_converted > 0 else 0.0
 
 c1, c2, c3, c4 = st.columns(4)
-c1.metric("Konvertáló rendelések", f"{n_converted:,}")
-c2.metric("Cross-sell rendelések", f"{n_cs:,}")
-c2.caption(f"{cs_share:.1f}% a konvertáló rendelések közül")
-c3.metric("Egytermékes rendelések", f"{n_single:,}")
-c3.caption(f"{single_share:.1f}% a konvertáló rendelések közül")
-c4.metric("Nem csatolt konvertáló útvonalak", f"{n_unmatched:,}")
+c1.metric("Converted orders", f"{n_converted:,}")
+c2.metric("Cross-sell orders", f"{n_cs:,}")
+c2.caption(f"{cs_share:.1f}% of converted orders")
+c3.metric("Single-product orders", f"{n_single:,}")
+c3.caption(f"{single_share:.1f}% of converted orders")
+c4.metric("Unmatched converted paths", f"{n_unmatched:,}")
 
 # -----------------------------------------------------------------------------
-# 4. Sparse Markov motor cross-sell súlyozott Removal Effect
+# 4. Sparse Markov engine cross-sell weighted Removal Effect
 # -----------------------------------------------------------------------------
-st.subheader("4. Érték-súlyozott Removal Effect (cross-sell konverziókra)")
+st.subheader("4. Value-weighted Removal Effect (cross-sell conversions)")
 st.markdown(
-    "Csak a **cross_sell_conversions** oszlopot használjuk súlyként, így a Removal Effect "
-    "megjeleníti, melyik csatorna kiesése veszíti le a legtöbb keresztértékesítést."
+    "Only the **cross_sell_conversions** column is used as weight, so the Removal "
+    "Effect shows which channel removal loses the most cross-sell conversions."
 )
 
-# A Removal Effect csak a cross-sell vásárlásokra számítódik. A konvertáló rendelések
-# között ezek a cross-sell maszk által kiválasztott rekordok.
+# Removal Effect is computed only on cross-sell purchases. Among converted orders,
+# these are the records selected by the cross-sell mask.
 cs_weighted = merged.loc[cs_mask].copy()
 cs_weighted["conversions"] = cs_weighted["cross_sell_conversions"]
 
 if cs_weighted.empty or cs_weighted["conversions"].sum() == 0:
-    st.info("Nincs cross-sell konverzió, ezért nem áll rendelkezésre Removal Effect.")
+    st.info("No cross-sell conversions, so Removal Effect is not available.")
 else:
     engine = MarkovJourneyEngine(cs_weighted, k=2, collapse_loops=True)
     base_cvr = engine.solve_prob(weight_col="conversions")
@@ -124,18 +124,18 @@ else:
     for ch in engine.channels:
         rem = engine.solve_prob(weight_col="conversions", drop=[ch])
         re_ = 1.0 - (rem / base_cvr) if base_cvr > 0 else 0.0
-        rows.append({"Csatorna": ch, "Cross-sell Removal Effect (%)": max(0.0, re_) * 100})
+        rows.append({"Channel": ch, "Cross-sell Removal Effect (%)": max(0.0, re_) * 100})
 
     re_df = pd.DataFrame(rows).sort_values("Cross-sell Removal Effect (%)", ascending=False)
 
     fig_re = px.bar(
         re_df,
-        x="Csatorna",
+        x="Channel",
         y="Cross-sell Removal Effect (%)",
         text_auto=".1f",
         color="Cross-sell Removal Effect (%)",
         color_continuous_scale="Blues",
-        title="Melyik csatorna kiesése veszítheti le a legtöbb cross-sell konverziót",
+        title="Which channel removal loses the most cross-sell conversions",
     )
     fig_re.update_layout(height=420, margin=dict(l=10, r=10, t=40, b=20))
     st.plotly_chart(fig_re, use_container_width=True)
@@ -147,7 +147,7 @@ else:
     )
 
 st.caption(
-    "Módszer: az MBA tábla alapján csak a cross-sell kosárak konverzióit használjuk a Markov "
-    "átmeneti mátrix súlyozásához. Ez a cross-sell vásárlói csoporton belüli csatornafüggőséget "
-    "jelzi, nem pedig ok-okozatilag bizonyított cross-sell növekedést."
+    "Method: based on the MBA table, only cross-sell basket conversions are used to "
+    "weight the Markov transition matrix. This indicates channel dependence within "
+    "the observed cross-sell buyer group — not causally proven cross-sell growth."
 )

@@ -25,7 +25,7 @@ from core.bridge_connectors import (
 )
 
 # -----------------------------------------------------------------------------
-# OLDAL KONFIGURÁCIÓ
+# PAGE CONFIGURATION
 # -----------------------------------------------------------------------------
 st.set_page_config(
     page_title="Markov Journey Mapper — Sparse Higher-Order Engine",
@@ -33,116 +33,125 @@ st.set_page_config(
 )
 
 # -----------------------------------------------------------------------------
-# 1. SZINTETIKUS DEMÓ ADATGENERÁTOR (RFM + MARGIN)
+# 1. SYNTHETIC DEMO DATA GENERATOR (RFM + MARGIN)
 # -----------------------------------------------------------------------------
 @st.cache_data
 def generate_demo_data() -> pd.DataFrame:
     data = [
-        ("Social_Ads > Blog > Search_NonBrand > Email", "Új vásárlók", 140, 420, 24000),
-        ("Social_Ads > Search_NonBrand > Search_Brand", "Új vásárlók", 190, 510, 26500),
-        ("Social_Ads > Blog", "Új vásárlók", 15, 890, 18000),
-        ("Social_Ads", "Új vásárlók", 20, 1450, 15000),
-        ("Display_Ads > Social_Ads > Search_NonBrand > Retargeting", "Új vásárlók", 95, 380, 29000),
-        ("Display_Ads", "Új vásárlók", 5, 1100, 14000),
-        ("Search_NonBrand > Blog > Email > Search_Brand", "Potenciális hűségesek", 210, 310, 34000),
-        ("Search_NonBrand > Retargeting > Search_Brand", "Potenciális hűségesek", 175, 290, 31000),
-        ("Search_NonBrand", "Potenciális hűségesek", 45, 720, 22000),
-        ("Email > Search_Brand", "VIP (Champions)", 420, 180, 52000),
-        ("Search_Brand > Email", "VIP (Champions)", 310, 120, 48000),
-        ("Email", "VIP (Champions)", 260, 240, 45000),
-        ("Search_Brand", "VIP (Champions)", 290, 190, 49000),
-        ("Retargeting > Email > Search_Brand", "Lemorzsolódó (At Risk)", 130, 410, 36000),
-        ("Social_Ads > Retargeting > Email", "Lemorzsolódó (At Risk)", 85, 520, 27500),
-        ("Retargeting", "Lemorzsolódó (At Risk)", 30, 640, 25000),
-        ("Blog > Search_NonBrand > Email", "Potenciális hűségesek", 110, 280, 33000),
-        ("Display_Ads > Blog > Retargeting", "Lemorzsolódó (At Risk)", 65, 490, 28000),
+        ("Social_Ads > Blog > Search_NonBrand > Email", "New Customers", 140, 420, 24000, 1.0),
+        ("Social_Ads > Search_NonBrand > Search_Brand", "New Customers", 190, 510, 26500, 1.0),
+        ("Social_Ads > Blog", "New Customers", 15, 890, 18000, 1.0),
+        ("Social_Ads", "New Customers", 20, 1450, 15000, 1.0),
+        ("Display_Ads > Social_Ads > Search_NonBrand > Retargeting", "New Customers", 95, 380, 29000, 1.0),
+        ("Display_Ads", "New Customers", 5, 1100, 14000, 1.0),
+        ("Search_NonBrand > Blog > Email > Search_Brand", "Potential Loyalists", 210, 310, 34000, 1.0),
+        ("Search_NonBrand > Retargeting > Search_Brand", "Potential Loyalists", 175, 290, 31000, 1.0),
+        ("Search_NonBrand", "Potential Loyalists", 45, 720, 22000, 1.0),
+        ("Email > Search_Brand", "VIP (Champions)", 420, 180, 52000, 1.0),
+        ("Search_Brand > Email", "VIP (Champions)", 310, 120, 48000, 1.0),
+        ("Email", "VIP (Champions)", 260, 240, 45000, 1.0),
+        ("Search_Brand", "VIP (Champions)", 290, 190, 49000, 1.0),
+        ("Retargeting > Email > Search_Brand", "At Risk", 130, 410, 36000, 1.0),
+        ("Social_Ads > Retargeting > Email", "At Risk", 85, 520, 27500, 1.0),
+        ("Retargeting", "At Risk", 30, 640, 25000, 1.0),
+        ("Blog > Search_NonBrand > Email", "Potential Loyalists", 110, 280, 33000, 1.0),
+        ("Display_Ads > Blog > Retargeting", "At Risk", 65, 490, 28000, 1.0),
+        ("Email > Search_Brand", "VIP (Champions)", 8, 2, 52000, -1.0),
+        ("Search_Brand", "VIP (Champions)", 5, 1, 49000, -1.0),
+        ("Blog > Search_NonBrand > Email", "Potential Loyalists", 10, 10, 33000, 0.0),
+        ("Social_Ads > Blog", "New Customers", 8, 12, 18000, 0.0),
+        ("Retargeting > Email > Search_Brand", "At Risk", 130, 270, 36000, 1.0),
+        ("Social_Ads > Retargeting > Email", "At Risk", 85, 315, 27500, 1.0),
+        ("Retargeting", "At Risk", 30, 370, 25000, 1.0),
+        ("Email > Search_Brand", "At Risk", 60, 440, 31000, 1.0),
     ]
     df = pd.DataFrame(
-        data, columns=["path", "rfm_segment", "conversions", "nulls", "avg_order_value"]
+        data, columns=["path", "rfm_segment", "conversions", "nulls", "avg_order_value", "margin_mult"]
     )
     df["revenue"] = df["conversions"] * df["avg_order_value"]
-    df["net_margin"] = df["revenue"] * 0.30
+    df["net_margin"] = df["revenue"] * 0.30 * df["margin_mult"]
     return df
 
 
 # -----------------------------------------------------------------------------
-# SIDEBAR: ADATFORRÁS, SZŰRŐK, MOTOR BEÁLLÍTÁSOK
+# SIDEBAR: DATA SOURCE, FILTERS, ENGINE SETTINGS
 # -----------------------------------------------------------------------------
-st.title("Markov Journey Mapper & Attribúciós Szimulátor")
+st.title("Markov Journey Mapper & Attribution Simulator")
 st.markdown(
-    "**Ritkamátrixos (Sparse), k-adik rendű és fedezetsúlyozott** elnyelő Markov-lánc, "
-    "Removal Effect kalkulátor, konverziós sebesség-diagnosztika és integrációs hídak az MMM, "
-    "RFM és MBA alkalmazásokhoz."
+    "**Sparse (sparse), higher-order, value-weighted** absorbing Markov chain, "
+    "Removal Effect calculator, conversion speed diagnostic, and integration bridges "
+    "for MMM, RFM, and MBA."
 )
 
 with st.sidebar:
-    st.header("Adatforrás és Szűrők")
+    st.header("Data Source & Filters")
     data_source = st.radio(
-        "Válassz adatforrást:",
-        ["Beépített RFM + Journey demó adat", "Saját CSV feltöltése"],
+        "Choose data source:",
+        ["Built-in RFM + Journey demo data", "Upload custom CSV"],
     )
 
-    effective_source = "demó"
+    effective_source = "demo"
 
-    if data_source == "Saját CSV feltöltése":
+    if data_source == "Upload custom CSV":
         st.info(
-            "Kötelező oszlopok: `path`, `conversions`, `nulls`. "
-            "Opcionális: `rfm_segment`, `revenue`, `net_margin`."
+            "Required columns: `path`, `conversions`, `nulls`. "
+            "Optional: `rfm_segment`, `revenue`, `net_margin`."
         )
-        uploaded_file = st.file_uploader("CSV fájl kiválasztása", type=["csv"])
+        uploaded_file = st.file_uploader("Select CSV file", type=["csv"])
         if uploaded_file is not None:
             try:
                 raw_df = load_csv_journeys(uploaded_file)
-                effective_source = "feltöltött CSV"
+                effective_source = "uploaded CSV"
                 st.success(
-                    f"CSV betöltve: {len(raw_df)} sor, "
-                    f"{raw_df['path'].nunique()} egyedi útvonal."
+                    f"CSV loaded: {len(raw_df)} rows, "
+                    f"{raw_df['path'].nunique()} unique paths."
                 )
             except Exception as exc:
-                st.error(f"CSV betöltési hiba: {exc}")
-                st.info("A rendszer a beépített demó adatokra váltott vissza.")
+                st.error(f"CSV load error: {exc}")
+                st.info("The system fell back to the built-in demo data.")
                 raw_df = generate_demo_data()
         else:
-            st.warning("Nincs CSV feltöltve; a beépített demó adatok láthatók.")
+            st.warning("No CSV uploaded; the built-in demo data is shown.")
             raw_df = generate_demo_data()
     else:
         raw_df = generate_demo_data()
 
-    # RFM szegmens szűrő
-    segments = ["Összes szegmens"] + sorted(raw_df["rfm_segment"].unique().tolist())
-    selected_segment = st.selectbox("RFM Szegmens szűrő:", segments)
+    # RFM segment filter
+    segments = ["All segments"] + sorted(raw_df["rfm_segment"].unique().tolist())
+    selected_segment = st.selectbox("RFM Segment filter:", segments)
 
-    if selected_segment != "Összes szegmens":
+    if selected_segment != "All segments":
         filtered_df = raw_df[raw_df["rfm_segment"] == selected_segment].copy()
     else:
         filtered_df = raw_df.copy()
 
     st.divider()
-    st.header("Markov Motor Beállítások")
-    k_order = st.selectbox("Lánc-rend (k):", [1, 2, 3], index=1)
-    collapse_loops = st.checkbox("Ötvöző hurkok eltávolítása (RLE)", value=True)
+    st.header("Markov Engine Settings")
+    k_order = st.selectbox("Chain order (k):", [1, 2, 3], index=1)
+    collapse_loops = st.checkbox("Remove looped chains (RLE)", value=True)
     st.caption(
-        "Visszamenőleges ablak (lookback): nem állítható, mert az aggregált bemeneti adatok "
-        "nem tartalmaznak időbélyeget, így az útvonalak dátuma szerinti szűrése nem lehetséges."
+        "Lookback window (lookback) is not adjustable because the aggregated input "
+        "data does not contain timestamps, so date-based path filtering is not possible."
     )
 
     min_edge_pct = st.slider(
-        "Minimum él-gyakoriság a Sankey-gráfon (%):",
+        "Minimum edge frequency in Sankey chart (%):",
         min_value=0.5, max_value=10.0, value=2.0, step=0.5,
     )
 
     st.divider()
     st.info(
-        f"Adatforrás: {effective_source}. A bevétel- és nettófedezet-értékek a betöltő "
-        "25 000 Ft / 30 % alapértékekkel kiegészítik, ha a forrás adat nem tartalmazza őket."
+        f"Data source: {effective_source}. Revenue and net margin values are "
+        "supplemented with the loader's defaults of 25,000 Ft / 30% if the source "
+        "data does not contain them."
     )
 
 # -----------------------------------------------------------------------------
-# MOTOR INICIALIZÁLÁSA
+# ENGINE INITIALIZATION
 # -----------------------------------------------------------------------------
 @st.cache_data
 def compute_attribution_cached(filtered_df, k_order, collapse_loops):
-    """Gyorsítótárazott attribúciós számítás: az engine illesztése és a Removal Effect."""
+    """Cached attribution computation: engine fitting and Removal Effect."""
     engine = MarkovJourneyEngine(
         filtered_df,
         path_sep=">",
@@ -168,7 +177,7 @@ except (ValueError, ZeroDivisionError) as exc:
     base_margin = 0.0
     attr_df = pd.DataFrame(
         columns=[
-            "Csatorna",
+            "Channel",
             "Volume_RE",
             "Margin_RE",
             "Volume_RE_pct",
@@ -180,93 +189,93 @@ except (ValueError, ZeroDivisionError) as exc:
     engine = None
 
 if engine is None:
-    st.error(f"Adatfeldolgozási hiba: {engine_error}")
+    st.error(f"Data processing error: {engine_error}")
     st.info(
-        "Ellenőrizze a feltöltött fájl tartalmát (érvénytelen csatornánév, "
-        "negatív vagy nem végtelen szám), vagy válasszon más adatforrást."
+        "Check the uploaded file's content (invalid channel name, "
+        "negative or non-finite number), or select another data source."
     )
     st.stop()
 
-# Összesített metrikák KPI-khoz
+# Aggregated metrics for KPIs
 total_conv = int(filtered_df["conversions"].sum())
 total_null = int(filtered_df["nulls"].sum())
 total_journeys = total_conv + total_null
 total_rev = float(filtered_df["revenue"].sum())
 
-# A teljes attr_df-hez hozzáadjuk a bevételt a Markov részesedés alapján (alap CVR arányban)
+# Add revenue to the full attribution table based on Markov share (base CVR ratio)
 if not attr_df.empty:
-    attr_df["Markov Konverziók"] = attr_df["Volume_RE"] / attr_df["Volume_RE"].sum() * total_conv if attr_df["Volume_RE"].sum() > 0 else 0
-    attr_df["Markov Bevétel (Ft)"] = attr_df["Volume_RE"] / attr_df["Volume_RE"].sum() * total_rev if attr_df["Volume_RE"].sum() > 0 else 0
+    attr_df["Markov Conversions"] = attr_df["Volume_RE"] / attr_df["Volume_RE"].sum() * total_conv if attr_df["Volume_RE"].sum() > 0 else 0
+    attr_df["Markov Revenue (Ft)"] = attr_df["Volume_RE"] / attr_df["Volume_RE"].sum() * total_rev if attr_df["Volume_RE"].sum() > 0 else 0
 
-top_channel = attr_df.iloc[0]["Csatorna"] if not attr_df.empty else "-"
+top_channel = attr_df.iloc[0]["Channel"] if not attr_df.empty else "-"
 top_re = attr_df.iloc[0]["Volume_RE_pct"] if not attr_df.empty else 0.0
 
 # -----------------------------------------------------------------------------
-# FELSŐ KPI KÁRTYÁK
+# TOP KPI CARDS
 # -----------------------------------------------------------------------------
 col1, col2, col3, col4 = st.columns(4)
-col1.metric("Összes vizsgált útvonal", f"{total_journeys:,}".replace(",", " "))
+col1.metric("Total paths analyzed", f"{total_journeys:,}".replace(",", " "))
 col2.metric(
-    "Markov Alap Konverziós Ráta",
+    "Markov Baseline Conversion Rate",
     f"{base_cvr * 100:.2f}%",
 )
-col2.caption(f"{total_conv:,} konverzió".replace(",", " "))
+col2.caption(f"{total_conv:,} conversions".replace(",", " "))
 col3.metric(
-    "Összes bevétel", f"{int(total_rev):,} Ft".replace(",", " ")
+    "Total revenue", f"{int(total_rev):,} Ft".replace(",", " ")
 )
 col4.metric(
-    "Legnagyobb eltávolítási hatású csatorna",
+    "Channel with highest removal effect",
     top_channel,
-    f"-{top_re:.1f}% konverziós hatás ha eltávolítva",
+    f"-{top_re:.1f}% conversion effect if removed",
     delta_color="normal",
 )
 
 st.divider()
 
 # -----------------------------------------------------------------------------
-# Konfigurációs korlátok (bemeneti méret és teljesítmény)
+# Configuration limits (input size and performance)
 # -----------------------------------------------------------------------------
-MAX_DISPLAY_STATES = 30  # A hőtérképben megjelenített átmeneti állapotok maximális száma.
+MAX_DISPLAY_STATES = 30  # Maximum number of transient states shown in heatmap.
 
 # -----------------------------------------------------------------------------
-# FÜLEK
+# TABS
 # -----------------------------------------------------------------------------
 tab1, tab2, tab3 = st.tabs([
-    "Attribúció",
-    "Útvonalak",
+    "Attribution",
+    "Journeys",
     "What-if",
 ])
 
 # =============================================================================
-# TAB 1: ATTRIBÚCIÓS IGAZSÁGMÉRLEG
+# TAB 1: ATTRIBUTION DASHBOARD
 # =============================================================================
 with tab1:
-    st.subheader("Markov Removal Effect — Volume és Nettó Fedezet")
+    st.subheader("Markov Removal Effect — Volume & Net Margin")
     st.markdown(
-        "A Removal Effect két dimenzióban jelenik meg: **Volume_RE** (konverziós darabszám kiesése) "
-        "és **Margin_RE** (nettó fedezet kiesése). A különbség lekéri azokat a csatornákat, "
-        "ami sok kisebb konverziós darabot hoz vs. ami nagy árrésű kosarakat."
+        "Removal Effect is shown in two dimensions: **Volume_RE** (conversion count drop) "
+        "and **Margin_RE** (net margin drop). The difference highlights channels that "
+        "generate many small conversions vs. those generating high-margin baskets."
     )
 
     if attr_df.empty:
-        st.warning("Nincs elég adat az attribúcióhoz.")
+        st.warning("Not enough data for attribution.")
     else:
         melt_df = attr_df.melt(
-            id_vars="Csatorna",
+            id_vars="Channel",
             value_vars=["Volume_RE_pct", "Margin_RE_pct"],
-            var_name="Mérés",
+            var_name="Measure",
             value_name="Removal Effect (%)",
         )
-        melt_df["Mérés"] = melt_df["Mérés"].map({
-            "Volume_RE_pct": "Konverziós darabszám",
-            "Margin_RE_pct": "Nettó fedezet",
+        melt_df["Measure"] = melt_df["Measure"].map({
+            "Volume_RE_pct": "Conversion count",
+            "Margin_RE_pct": "Net margin",
         })
 
         fig_bar = px.bar(
             melt_df,
-            x="Csatorna",
+            x="Channel",
             y="Removal Effect (%)",
-            color="Mérés",
+            color="Measure",
             barmode="group",
             text_auto=".1f",
             color_discrete_sequence=["#2563EB", "#64748B"],
@@ -274,17 +283,17 @@ with tab1:
         )
         fig_bar.add_hline(y=0, line_width=1, line_dash="dash", line_color="#94A3B8")
         fig_bar.update_layout(
-            legend_title_text="Mérési mód", xaxis_title="", yaxis_title="Removal Effect (%)"
+            legend_title_text="Measure", xaxis_title="", yaxis_title="Removal Effect (%)"
         )
         st.plotly_chart(fig_bar, use_container_width=True)
 
-        st.markdown("#### Részletes Attribúciós Táblázat")
+        st.markdown("#### Detailed Attribution Table")
         show_cols = [
-            "Csatorna",
+            "Channel",
             "Volume_RE_pct",
             "Margin_RE_pct",
-            "Markov Konverziók",
-            "Markov Bevétel (Ft)",
+            "Markov Conversions",
+            "Markov Revenue (Ft)",
         ]
         def _fmt_pct(v):
             if pd.isna(v):
@@ -295,34 +304,33 @@ with tab1:
             attr_df[show_cols].style.format({
                 "Volume_RE_pct": _fmt_pct,
                 "Margin_RE_pct": _fmt_pct,
-                "Markov Konverziók": "{:.1f}",
-                "Markov Bevétel (Ft)": "{:,.0f} Ft",
+                "Markov Conversions": "{:.1f}",
+                "Markov Revenue (Ft)": "{:,.0f} Ft",
             }),
             use_container_width=True,
         )
         st.caption(
-            "A negatív Margin_RE azt jelenti, hogy a csatorna eltávolítása javítaná a "
-            "várható nettó fedezetet (vesztető csatorna). A 'N/A' érték azt jelenti, "
-            "hogy az alap nettó fedezet nem pozitív, ezért a százalékos fedezet-"
-            "kiesés nincs jelentésben."
+            "A negative Margin_RE means removing the channel would improve expected "
+            "net margin (loss-making channel). The 'N/A' value means the baseline "
+            "net margin is not positive, so percentage margin removal effect has no meaning."
         )
 
 # =============================================================================
-# TAB 2: SANKEY ÉS ÁTMENETI MÁTRIX
+# TAB 2: SANKEY & TRANSITION MATRIX
 # =============================================================================
 with tab2:
     col_sankey, col_heat = st.columns([1.15, 1])
 
     with col_sankey:
-        st.subheader("Vásárlói Forgalom (Sankey-gráf)")
-        # Valós átmenet-darabszámok a becsolt láncból (nem P * journey_sorösszeg becslés).
+        st.subheader("Customer Flow (Sankey chart)")
+        # Real transition counts from the estimated chain (not P * journey count estimate).
         state_idx = {s: i for i, s in enumerate(all_states)}
 
         sources, targets, values, link_colors = [], [], [], []
         total_transitions = 0.0
         if edge_counts:
             total_transitions = sum(w for _, _, w in edge_counts)
-            # A szűrés határa: az összes átmenet X százaléka (megtartja a jelentős folyókat).
+            # Threshold: X% of all transitions (keeps significant flows).
             threshold = (min_edge_pct / 100.0) * total_transitions
             for frm, to, w in edge_counts:
                 if w < threshold:
@@ -347,19 +355,18 @@ with tab2:
         fig_sankey.update_layout(height=520, margin=dict(l=10, r=10, t=20, b=20))
         st.plotly_chart(fig_sankey, use_container_width=True)
         st.caption(
-            f"Élesszűrő: {min_edge_pct}% az összes átmenetből ({int(total_transitions):,} darab). "
-            "A szűrés elrejt néhány élt, ezért a látható gráf nem mutatja meg a teljes forgalmat."
+            f"Edge filter: {min_edge_pct}% of all transitions ({int(total_transitions):,} items). "
+            "The filter hides some edges, so the visible chart does not show total flow."
         )
 
     with col_heat:
-        st.subheader("Átmeneti Valószínűségi Mátrix ($P_{ij}$)")
+        st.subheader("Transition Probability Matrix ($P_{ij}$)")
         n_trans = engine.n_trans
         state_pos = {s: i for i, s in enumerate(engine.transient_states)}
-        # A teljes n_all x n_all mátrix derszeálása nagy állapottérnél
-        # memoria-fogyasztó lehet (10 000 állapot -> ~800 MB), ezért csak egy
-        # korlátozott részhalmazt mutatunk. A rangsorolás az előzetesen becsült
-        # átmenet-darabszámokon alapul (egyiquitést a Denkmalvádon bontjuk), nem a
-        # normalizált valószínűségeken, mert azok mindegyike 1.0-ra összegeződik.
+        # Full n_all x n_all matrix densification is memory-intensive for large state
+        # spaces (10,000 states -> ~800 MB), so we only show a bounded subset. Ranking
+        # is based on estimated transition counts (ties broken by state name), not
+        # normalized probabilities, since those all sum to 1.0.
         outgoing_counts = {s: 0.0 for s in engine.transient_states}
         for frm, to, w in engine.transition_counts:
             if frm in outgoing_counts:
@@ -371,11 +378,10 @@ with tab2:
             shown_total = sum(w for _, w in ranked[:MAX_DISPLAY_STATES])
             all_total = sum(outgoing_counts.values())
             st.info(
-                f"A teljes állapottér ({n_trans} átmeneti állapot) túl nagy a pontos "
-                f"hőtérképhez; a {MAX_DISPLAY_STATES} legerősebb forgalomú állapotot "
-                f"mutatjuk ({shown_total:.0f} / {all_total:.0f} átmenet). A sorok nem "
-                "lesznek 100%-osak, mert a nem megjelenített állapotokra irányuló "
-                "átmenetek kihagyásra kerültek."
+                f"The full state space ({n_trans} transient states) is too large for "
+                f"the heatmap; we show the {MAX_DISPLAY_STATES} highest-traffic states "
+                f"({shown_total:.0f} / {all_total:.0f} transitions). Rows will not sum "
+                "to 100% because transitions to hidden states are omitted."
             )
         else:
             sel_states = engine.transient_states
@@ -392,7 +398,7 @@ with tab2:
                 P_disp[i, j] = float(engine.Q_conv[ii, jj])
             P_disp[i, conv_col] = float(engine.R_conv[ii, 0])
             P_disp[i, null_col] = float(engine.R_conv[ii, 1])
-        # Absorbing állapotok önmagakra mutassanak
+        # Absorbing states point to themselves
         P_disp[conv_col, conv_col] = 1.0
         P_disp[null_col, null_col] = 1.0
 
@@ -406,23 +412,23 @@ with tab2:
             text_auto=".1f",
             aspect="auto",
             color_continuous_scale="Blues",
-            labels=dict(x="Cél állapot (j)", y="Forrás állapot (i)", color="Átmenet (%)"),
+            labels=dict(x="Target state (j)", y="Source state (i)", color="Transition (%)"),
         )
         fig_heat.update_layout(height=520, margin=dict(l=10, r=10, t=20, b=20))
         st.plotly_chart(fig_heat, use_container_width=True)
 
 # =============================================================================
-# TAB 3: WHAT-IF & SEBESSÉG DIAGNOSTIKA
+# TAB 3: WHAT-IF & SPEED DIAGNOSTICS
 # =============================================================================
 with tab3:
-    st.subheader("What-If Csatorna-kiesés Szimulátor")
+    st.subheader("What-If Channel Removal Simulator")
     st.markdown(
-        "Válassz ki egy vagy több csatornát, és nézd meg, hogyan változik a konverziós ráta, "
-        "ha az érintkezési pontokat eltávolítjuk (Removal Effect szimuláció)."
+        "Select one or more channels and see how the conversion rate changes "
+        "when their touchpoints are removed (Removal Effect simulation)."
     )
 
     disabled_channels = st.multiselect(
-        "Kapcsold ki a tesztelni kívánt csatornákat:",
+        "Select channels to disable for testing:",
         options=engine.channels,
         default=[top_channel] if top_channel != "-" else [],
     )
@@ -430,16 +436,16 @@ with tab3:
     try:
         sim_cvr = engine.solve_prob(weight_col="conversions", drop=disabled_channels)
     except ValueError as exc:
-        st.error(f"What-if szimulációs hiba: {exc}")
-        st.info("Válasszon másik csatornakombinációt.")
+        st.error(f"What-if simulation error: {exc}")
+        st.info("Select a different channel combination.")
         sim_cvr = None
 
     s_col1, s_col2, s_col3 = st.columns(3)
     if sim_cvr is None:
-        s_col1.metric("Szimulált Konverziós Ráta", "Nem elérhető")
-        s_col1.caption("A szimuláció nem állítható elő az aktuális kombinációhoz.")
-        s_col2.metric("Becsült Konverzió-kiesés", "-")
-        s_col3.metric("Kockáztatott Bevétel (Removal Loss)", "-")
+        s_col1.metric("Simulated Conversion Rate", "Not available")
+        s_col1.caption("Simulation cannot be produced for the current combination.")
+        s_col2.metric("Estimated conversion drop", "-")
+        s_col3.metric("At-risk Revenue (Removal Loss)", "-")
     else:
         cvr_drop_pct = (1.0 - (sim_cvr / base_cvr)) * 100 if base_cvr > 0 else 0.0
         lost_conversions = total_conv * (cvr_drop_pct / 100.0)
@@ -447,42 +453,42 @@ with tab3:
 
         delta_label = f"{-cvr_drop_pct:.1f}%" if cvr_drop_pct > 0 else "0.0%"
         s_col1.metric(
-            "Szimulált Konverziós Ráta",
+            "Simulated Conversion Rate",
             f"{sim_cvr * 100:.2f}%",
             delta_label,
             delta_color="normal",
         )
         s_col1.caption(
-            f"{int(round(lost_conversions)):,} konverzió veszteség".replace(",", " ")
+            f"{int(round(lost_conversions)):,} conversions lost".replace(",", " ")
         )
         s_col2.metric(
-            "Becsült Konverzió-kiesés",
-            f"{int(round(lost_conversions)):,} db".replace(",", " "),
+            "Estimated conversion drop",
+            f"{int(round(lost_conversions)):,} units".replace(",", " "),
         )
         s_col3.metric(
-            "Kockáztatott Bevétel (Removal Loss)",
+            "At-risk Revenue (Removal Loss)",
             f"{int(round(lost_revenue)):,} Ft".replace(",", " "),
         )
 
     st.divider()
 
-    st.subheader("Várható Lépésszám az Elnyelésig")
+    st.subheader("Expected Steps to Absorption")
     st.markdown(
-        r"A fundamentális mátrix ($\mathbf{N} \cdot \mathbf{1}$) alapján: hány további lépésre van "
-        r"átlagosan szükség az adott állapotból a konverzióig vagy a kilépésig. Ez a lépésszám, "
-        r"nem idő mértéke, és nem jelzi egyedi csatorna 'fricción'át."
+        r"Based on the fundamental matrix ($\mathbf{N} \cdot \mathbf{1}$): how many more "
+        r"steps on average are needed from a given state to conversion or exit. This is "
+        r"a step count, not a time measure, and does not indicate per-channel 'friction'."
     )
     steps_dict = engine.expected_steps_to_absorption()
     if steps_dict:
         steps_df = pd.DataFrame(
-            list(steps_dict.items()), columns=["Állapot", "Várható lépésszám"]
-        ).sort_values("Várható lépésszám", ascending=False)
+            list(steps_dict.items()), columns=["State", "Expected steps"]
+        ).sort_values("Expected steps", ascending=False)
         fig_steps = px.bar(
             steps_df.head(15),
-            x="Várható lépésszám",
-            y="Állapot",
+            x="Expected steps",
+            y="State",
             orientation="h",
-            title="Top 15 legtöbben lépést igénylő állapot",
+            title="Top 15 states requiring most steps",
         )
         fig_steps.update_layout(height=420, margin=dict(l=10, r=10, t=40, b=20))
         st.plotly_chart(fig_steps, use_container_width=True)

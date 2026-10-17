@@ -45,7 +45,7 @@ def test_empty_input_no_traceback():
 
 
 def test_all_zero_input_safe():
-    # Mind-null sorok (konverzió nélkül): csatornák jelen vannak, de CVR 0.
+    # Zero-conversion rows: channels present, but CVR is 0.
     df = pd.DataFrame(
         {
             "path": ["A > B", "C"],
@@ -84,7 +84,7 @@ def test_negative_counts_rejected_by_engine():
             "nulls": [0, -2],
         }
     )
-    with pytest.raises(ValueError, match="Érvénytelen"):
+    with pytest.raises(ValueError, match="Invalid"):
         MarkovJourneyEngine(df, k=2)
 
 
@@ -97,7 +97,7 @@ def test_non_finite_counts_rejected_by_engine():
             "nulls": [5, 5, 5],
         }
     )
-    with pytest.raises(ValueError, match="Érvénytelen"):
+    with pytest.raises(ValueError, match="Invalid"):
         MarkovJourneyEngine(df, k=2)
 
 
@@ -111,7 +111,7 @@ def test_non_finite_margin_rejected_by_engine():
             "net_margin": [100.0, np.inf],
         }
     )
-    with pytest.raises(ValueError, match="Érvénytelen"):
+    with pytest.raises(ValueError, match="Invalid"):
         MarkovJourneyEngine(df, k=2)
 
 
@@ -121,49 +121,49 @@ def test_non_finite_margin_rejected_by_engine():
 def test_csv_loader_rejects_invalid_counts(tmp_path):
     p = tmp_path / "bad.csv"
     p.write_text("path,conversions,nulls\nA>B,abc,5\nC>D,3,xyz\n")
-    with pytest.raises(ValueError, match="érvénytelen"):
+    with pytest.raises(ValueError, match="invalid"):
         load_csv_journeys(str(p))
 
 
 def test_csv_loader_rejects_missing_path(tmp_path):
     p = tmp_path / "missing_path.csv"
     p.write_text("path,conversions,nulls\n,5,5\nA>B,3,5\n")
-    with pytest.raises(ValueError, match="hiányzó útvonal"):
+    with pytest.raises(ValueError, match="missing path"):
         load_csv_journeys(str(p))
 
 
 def test_csv_loader_rejects_empty_and_separator_paths(tmp_path):
     p = tmp_path / "empty_path.csv"
     p.write_text("path,conversions,nulls\n  ,5,5\n> >,3,2\nA>B,1,1\n")
-    with pytest.raises(ValueError, match="üres vagy csak szeparátorból álló"):
+    with pytest.raises(ValueError, match="empty or separator-only path"):
         load_csv_journeys(str(p))
 
 
 def test_csv_loader_rejects_infinite_revenue(tmp_path):
     p = tmp_path / "inf_rev.csv"
     p.write_text("path,conversions,nulls,revenue,net_margin\nA>B,1,1,inf,0.3\n")
-    with pytest.raises(ValueError, match="Érvénytelen"):
+    with pytest.raises(ValueError, match="Invalid"):
         load_csv_journeys(str(p))
 
 
 def test_csv_loader_rejects_infinite_margin(tmp_path):
     p = tmp_path / "inf_mar.csv"
     p.write_text("path,conversions,nulls,revenue,net_margin\nA>B,1,1,100,inf\n")
-    with pytest.raises(ValueError, match="Érvénytelen"):
+    with pytest.raises(ValueError, match="Invalid"):
         load_csv_journeys(str(p))
 
 
 def test_csv_loader_rejects_channel_name_with_delimiter(tmp_path):
     p = tmp_path / "bad_channel.csv"
     p.write_text("path,conversions,nulls\nA__B > C,5,5\nC,5,5\n")
-    with pytest.raises(ValueError, match="Érvénytelen csatornánév"):
+    with pytest.raises(ValueError, match="Invalid channel name"):
         load_csv_journeys(str(p))
 
 
 def test_csv_loader_rejects_zero_volume_with_money(tmp_path):
     p = tmp_path / "zero_vol.csv"
     p.write_text("path,conversions,nulls,revenue,net_margin\nA,1,0,100,30\nB,0,0,1000,300\n")
-    with pytest.raises(ValueError, match="Null volúmenes"):
+    with pytest.raises(ValueError, match="Zero-volume"):
         load_csv_journeys(str(p))
 
 
@@ -211,8 +211,8 @@ def test_margin_re_aggregation_invariant():
     )
     eng_a = MarkovJourneyEngine(base, k=1)
     eng_b = MarkovJourneyEngine(split, k=1)
-    attr_a = eng_a.compute_attribution().set_index("Csatorna")
-    attr_b = eng_b.compute_attribution().set_index("Csatorna")
+    attr_a = eng_a.compute_attribution().set_index("Channel")
+    attr_b = eng_b.compute_attribution().set_index("Channel")
     for ch in ["A", "B"]:
         assert abs(attr_a.loc[ch, "Margin_RE"] - attr_b.loc[ch, "Margin_RE"]) < 1e-9
 
@@ -228,7 +228,7 @@ def test_signed_margin_effect_preserved():
         }
     )
     eng = MarkovJourneyEngine(df, k=1)
-    attr = eng.compute_attribution().set_index("Csatorna")
+    attr = eng.compute_attribution().set_index("Channel")
     assert abs(eng.solve_prob(weight_col="net_margin") - 25.0) < 1e-9
     # Removing B (margin -50) raises expected margin: Margin_RE is negative.
     assert attr.loc["B", "Margin_RE"] < 0
@@ -249,7 +249,7 @@ def test_nonpositive_baseline_margin_unavailable():
         }
     )
     eng = MarkovJourneyEngine(df, k=1)
-    attr = eng.compute_attribution().set_index("Csatorna")
+    attr = eng.compute_attribution().set_index("Channel")
     assert eng.solve_prob(weight_col="net_margin") <= 0
     assert pd.isna(attr.loc["A", "Margin_RE"])
     assert pd.isna(attr.loc["B", "Margin_RE"])
@@ -338,7 +338,7 @@ def test_what_if_failure_renders_unavailable_state():
     assert len(at.exception) == 0, f"Initial app run raised: {at.exception}"
 
     # Select two channels to drop, triggering the forced What-if failure.
-    ms_label = "Kapcsold ki a tesztelni kívánt csatornákat:"
+    ms_label = "Select channels to disable for testing:"
     ms = [e for e in at.multiselect._list if e.label == ms_label][0]
     ms.set_value(list(ms.options[:2]))
     at.run(timeout=60)
@@ -346,16 +346,14 @@ def test_what_if_failure_renders_unavailable_state():
     app_module.MarkovJourneyEngine.solve_prob = original
 
     assert len(at.exception) == 0, f"App raised after multi-drop: {at.exception}"
-    # The What-if metric should show "Nem elérhető", not a formatted None or zero.
+    # The What-if metric should show "Not available", not a formatted None or zero.
     found = any(
-        "Nem elérhető" in str(el.value) for el in at.get("metric") if el.value is not None
+        "Not available" in str(el.value) for el in at.get("metric") if el.value is not None
     )
-    assert found, "Expected 'Nem elérhető' metric on What-if failure"
+    assert found, "Expected 'Not available' metric on What-if failure"
 
 
-# --------------------------------------------------------------------------- #
-# Application-level smoke tests
-# --------------------------------------------------------------------------- #
+def test_deterministic_steps_exact_values():
     """A > B > C: Start plus one state per touchpoint, identical transitions across k."""
     df = pd.DataFrame(
         {
@@ -476,32 +474,13 @@ def test_demo_revenue_reconciles_with_generator():
     """The committed generator's revenue reconciles with its aggregate base table."""
     import scripts.generate_demo_data as gen
 
-    base = [
-        ("Social_Ads > Blog > Search_NonBrand > Email", "Új vásárlók", 140, 420, 24000),
-        ("Social_Ads > Search_NonBrand > Search_Brand", "Új vásárlók", 190, 510, 26500),
-        ("Social_Ads > Blog", "Új vásárlók", 15, 890, 18000),
-        ("Social_Ads", "Új vásárlók", 20, 1450, 15000),
-        ("Display_Ads > Social_Ads > Search_NonBrand > Retargeting", "Új vásárlók", 95, 380, 29000),
-        ("Display_Ads", "Új vásárlók", 5, 1100, 14000),
-        ("Search_NonBrand > Blog > Email > Search_Brand", "Potenciális hűségesek", 210, 310, 34000),
-        ("Search_NonBrand > Retargeting > Search_Brand", "Potenciális hűségesek", 175, 290, 31000),
-        ("Search_NonBrand", "Potenciális hűségesek", 45, 720, 22000),
-        ("Email > Search_Brand", "VIP (Champions)", 420, 180, 52000),
-        ("Search_Brand > Email", "VIP (Champions)", 310, 120, 48000),
-        ("Email", "VIP (Champions)", 260, 240, 45000),
-        ("Search_Brand", "VIP (Champions)", 290, 190, 49000),
-        ("Retargeting > Email > Search_Brand", "Lemorzsolódó (At Risk)", 130, 410, 36000),
-        ("Social_Ads > Retargeting > Email", "Lemorzsolódó (At Risk)", 85, 520, 27500),
-        ("Retargeting", "Lemorzsolódó (At Risk)", 30, 640, 25000),
-        ("Blog > Search_NonBrand > Email", "Potenciális hűségesek", 110, 280, 33000),
-        ("Display_Ads > Blog > Retargeting", "Lemorzsolódó (At Risk)", 65, 490, 28000),
-    ]
-    intended_rev = sum(conv * aov for _, _, conv, _, aov in base)
+    base = gen.BASE_JOURNEYS
+    intended_rev = sum(conv * aov for _, _, conv, _, aov, _ in base)
     # Re-run the generator's journey construction inline to capture per-row revenue.
     rows = []
     journey_id = 0
-    for path, seg, conv, nulls, aov in base:
-        per_conv_margin = aov * 0.30
+    for path, seg, conv, nulls, aov, margin_mult in base:
+        per_conv_margin = aov * 0.30 * margin_mult
         total_journeys = conv + nulls
         for j in range(total_journeys):
             is_conv = j < conv
@@ -523,8 +502,10 @@ def test_demo_revenue_reconciles_with_generator():
     # Every converting row gets exactly its AOV, not the aggregate total.
     conv_rows = gen_df[gen_df["conversions"] == 1]
     for _, row in conv_rows.iterrows():
-        base_row = next(b for b in base if b[0] == row["path"])
-        assert row["revenue"] == base_row[4], f"{row['path']}: {row['revenue']} != {base_row[4]}"
+        base_rows = [b for b in base if b[0] == row["path"]]
+        assert any(
+            abs(row["revenue"] - br[4]) < 1e-6 for br in base_rows
+        ), f"{row['path']}: {row['revenue']} not in {[br[4] for br in base_rows]}"
 
 
 def test_actual_generator_output_reconciles(tmp_path):
@@ -672,7 +653,7 @@ def test_clean_journey_collapse_loops():
 
 
 def test_transition_counts_excludes_absorbing_self_loops():
-    """Sankey source must not expose synthetic Conversion→Conversion / Null→Null loops."""
+    """Sankey source must not expose synthetic Conversion->Conversion / Null->Null loops."""
     df = pd.DataFrame(
         {
             "path": ["A > B", "C"],
@@ -716,7 +697,7 @@ def test_solver_rejects_non_absorbing_chain():
     Q_bad[0, 0] = 1.0
     b = np.zeros(n)
     b[eng._state_idx[START]] = 1.0
-    with pytest.raises(ValueError, match="nem abszorbeert|no stable solution"):
+    with pytest.raises(ValueError, match="Non-absorbing|no stable solution"):
         eng._solve_visit_system(sp.eye(n, format="csr") - Q_bad.T, b)
 
 
@@ -729,7 +710,7 @@ def test_channel_name_with_delimiter_rejected():
             "nulls": [5, 5],
         }
     )
-    with pytest.raises(ValueError, match="Érvénytelen csatornánév"):
+    with pytest.raises(ValueError, match="Invalid channel name"):
         MarkovJourneyEngine(df, k=2)
 
 
@@ -743,7 +724,7 @@ def test_reserved_state_name_rejected():
                 "nulls": [5, 5],
             }
         )
-        with pytest.raises(ValueError, match="Érvénytelen csatornánév"):
+        with pytest.raises(ValueError, match="Invalid channel name"):
             MarkovJourneyEngine(df, k=2)
 
 

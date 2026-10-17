@@ -1,7 +1,7 @@
-"""RFM Segmentation & Transition Drift — RFM → Markov szegmens-hasonlítás.
+"""RFM Segmentation & Transition Drift — RFM → Markov segment comparison.
 
-Két RFM szegmens átmeneti valószínűségi mátrixát comparesolja (ΔP = P_A − P_B),
-hőtérképen jeleníti meg a lelépési pontokat, ahol az új vásárlók eltérnek a VIP-ktől.
+Compares two RFM segment transition probability matrices (ΔP = P_A − P_B),
+displaying drop-off points in a heatmap where new customers differ from VIPs.
 """
 
 from __future__ import annotations
@@ -19,14 +19,14 @@ st.set_page_config(page_title="RFM Segmentation", layout="wide")
 
 st.title("RFM Segmentation & Transition Drift")
 st.markdown(
-    "**RFM → Markov integráció.** Két RFM szegmens átmeneti valószínűségi mátrixának "
-    "különbsége (Δ**P** = **P**ₐ − **P**ᵦ). Pozitív érték: a primera szegmensben "
-    "gyakrabban fordul elő az adott lépés. Piros/zöld hőtérképen azonnal látszik, "
-    "melyik útvonal-nál szakadnak le az új érdeklődők a VIP-hez képest."
+    "**RFM → Markov integration.** Difference of two RFM segment transition "
+    "probability matrices (Δ**P** = **P**ₐ − **P**ᵦ). Positive value: the step is "
+    "more common in the first segment. Red/green heatmap immediately shows where "
+    "new prospects drop off compared to VIPs."
 )
 
 # -----------------------------------------------------------------------------
-# Adat betöltés
+# Data loading
 # -----------------------------------------------------------------------------
 @st.cache_data
 def _load_data():
@@ -34,7 +34,7 @@ def _load_data():
 
 rfm_df = _load_data()
 
-# Journey adatok betöltése (egyszerűsített: az összes journey egy tábla)
+# Journey data loading (simplified: all journeys in one table)
 import duckdb
 journeys = duckdb.execute(
     "SELECT path, rfm_segment, SUM(conversions) AS conversions, SUM(nulls) AS nulls, "
@@ -44,10 +44,10 @@ journeys = duckdb.execute(
 ).df()
 
 if journeys.empty:
-    st.warning("Nincs journey adat.")
+    st.warning("No journey data.")
     st.stop()
 
-st.subheader("1. RFM szegmens áttekintés")
+st.subheader("1. RFM segment overview")
 seg_stats = (
     rfm_df.groupby("rfm_segment")
     .agg(users=("user_id", "count"), average_monetary=("monetary", "mean"))
@@ -56,38 +56,38 @@ seg_stats = (
 st.dataframe(seg_stats, use_container_width=True, hide_index=True)
 
 # -----------------------------------------------------------------------------
-# Szegmens pár kiválasztása
+# Segment pair selection
 # -----------------------------------------------------------------------------
 segments = sorted(journeys["rfm_segment"].unique().tolist())
 col_sel1, col_sel2 = st.columns(2)
 vip_idx = segments.index("VIP (Champions)") if "VIP (Champions)" in segments else 0
 with col_sel1:
-    seg_a = st.selectbox("Szegmens A", segments, index=vip_idx)
+    seg_a = st.selectbox("Segment A", segments, index=vip_idx)
 with col_sel2:
     other = [s for s in segments if s != seg_a]
     default_b = other[0] if other else seg_a
-    seg_b = st.selectbox("Szegmens B", segments, index=segments.index(default_b))
+    seg_b = st.selectbox("Segment B", segments, index=segments.index(default_b))
 
 if seg_a == seg_b:
-    st.warning("Válassz két különböző szegmenst.")
+    st.warning("Select two different segments.")
     st.stop()
 
 # -----------------------------------------------------------------------------
-# Delta mátrix számítása
+# Delta matrix computation
 # -----------------------------------------------------------------------------
-with st.spinner(f"Átmeneti mátrixok számítása: {seg_a} vs {seg_b}..."):
+with st.spinner(f"Computing transition matrices: {seg_a} vs {seg_b}..."):
     delta_P = compare_rfm_transition_matrices(journeys, seg_a, seg_b, path_sep=">", k=2)
 
-st.subheader(f"2. Átmeneti mátrix különbség: {seg_a} − {seg_b} (százalékpont)")
+st.subheader(f"2. Transition matrix difference: {seg_a} − {seg_b} (percentage points)")
 st.markdown(
-    f"Pozitív (zöld): {seg_a} jellemzőbb → {seg_b}hez képest. "
-    f"Negatív (piros): {seg_b} jellemzőbb."
+    f"Positive (green): {seg_a} more characteristic → compared to {seg_b}. "
+    f"Negative (red): {seg_b} more characteristic."
 )
 
-# Szűrő: csak nagyobb abszolút különbségek
-threshold = st.slider("Minimum abszolút eltérés (százalékpont):", 0.0, 20.0, 2.0, 0.5)
+# Filter: only larger absolute differences
+threshold = st.slider("Minimum absolute difference (percentage points):", 0.0, 20.0, 2.0, 0.5)
 
-# Hőtérkép: csak a különböző cellák kiemelése
+# Heatmap: highlight only different cells
 plot_df = delta_P.copy()
 masked = plot_df.where(plot_df.abs() >= threshold)
 
@@ -97,28 +97,29 @@ fig = px.imshow(
     aspect="auto",
     color_continuous_scale="RdYlGn",
     color_continuous_midpoint=0,
-    labels=dict(x="Cél állapot", y="Forrás állapot", color="ΔP (pp)"),
+    labels=dict(x="Target state", y="Source state", color="ΔP (pp)"),
     title=f"Transition Drift: {seg_a} minus {seg_b}",
 )
 fig.update_layout(height=600, margin=dict(l=10, r=10, t=40, b=20))
 st.plotly_chart(fig, use_container_width=True)
 
-# Top eltérék táblázat
-st.subheader("3. Legnagyobb eltérések (Top 15)")
+# Top differences table
+st.subheader("3. Largest differences (Top 15)")
 long_df = (
     delta_P.stack()
     .reset_index()
-    .rename(columns={"level_0": "Forrás", "level_1": "Cél", 0: "ΔP_pp"})
+    .rename(columns={"level_0": "Source", "level_1": "Target", 0: "ΔP_pp"})
 )
 long_df["abs"] = long_df["ΔP_pp"].abs()
 top_diff = long_df.sort_values("abs", ascending=False).head(15)
 st.dataframe(
-    top_diff[["Forrás", "Cél", "ΔP_pp"]].style.format({"ΔP_pp": "{:+.2f} pp"}),
+    top_diff[["Source", "Target", "ΔP_pp"]].style.format({"ΔP_pp": "{:+.2f} pp"}),
     use_container_width=True,
     hide_index=True,
 )
 
 st.caption(
-    "Módszer: Mindkét szegmenshez külön k=2 rendű sparse Markov-matix épül, majd közös "
-    "állapottérre rushkítjuk és kivonjuk egymásból (ΔP · 100 = százalékpontos különbség)."
+    "Method: A separate k=2 order sparse Markov matrix is built for each segment, "
+    "then mapped onto a common state space and subtracted from each other "
+    "(ΔP · 100 = percentage point difference)."
 )

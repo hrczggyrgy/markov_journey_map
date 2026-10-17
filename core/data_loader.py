@@ -1,4 +1,5 @@
-"""DuckDB-alapú adatreteg: Parquet fájlokból villámgyors útvonal-szűrés."""
+"""DuckDB-based data layer: lightning-fast path filtering from Parquet files
+without memory overflow."""
 
 from __future__ import annotations
 
@@ -15,9 +16,9 @@ def load_aggregated_edges(
     lookback_days: int | None = None,
     group_by_col: str = "path",
 ) -> pd.DataFrame:
-    """Villámgyors SQL-alapú útvonal-szűrés Parquet fájlból memóriatúlcsordulás nélkül.
+    """Fast SQL-based path filtering from Parquet without memory overflow.
 
-    Visszatér egy DataFrame-del oszlopokkal:
+    Returns a DataFrame with columns:
       <group_by_col>, conversions, nulls, revenue, net_margin
     """
     where_clauses = []
@@ -49,19 +50,19 @@ def load_aggregated_edges(
 
 
 def load_rfm_segments(parquet_path: str) -> pd.DataFrame:
-    """RFM szegmens tábla betöltése (user_id, rfm_label, clv_tier)."""
+    """Load RFM segment table (user_id, rfm_label, clv_tier)."""
     query = "SELECT * FROM read_parquet(?)"
     return duckdb.execute(query, [parquet_path]).df()
 
 
 def load_mba_rules(parquet_path: str) -> pd.DataFrame:
-    """MBA szabályok betöltése (order_id, bundle_type, net_margin, is_cross_sell_bundle)."""
+    """Load MBA rules (order_id, bundle_type, net_margin, is_cross_sell_bundle)."""
     query = "SELECT * FROM read_parquet(?)"
     return duckdb.execute(query, [parquet_path]).df()
 
 
 def save_parquet(df: pd.DataFrame, path: str) -> None:
-    """DataFrame mentése Parquet-ként DuckDB-rel."""
+    """Save DataFrame as Parquet using DuckDB."""
     duckdb.execute(f"COPY (SELECT * FROM df) TO '{path}' (FORMAT PARQUET)")
 
 
@@ -69,33 +70,32 @@ def load_csv_journeys(
     file,
     default_revenue_per_conversion: float = 25000.0,
     default_margin_rate: float = 0.30,
-    default_segment: str = "Minden vásárló",
+    default_segment: str = "All customers",
 ) -> pd.DataFrame:
     """
-    CSV journey fájl betöltése és érvényesítése.
+    CSV journey file loading and validation.
 
-    Kötelező oszlopok: `path`, `conversions`, `nulls`.
-    Opcionális (kiegészítve ha hiányzik): `rfm_segment`, `revenue`, `net_margin`.
+    Required columns: `path`, `conversions`, `nulls`.
+    Optional (filled if missing): `rfm_segment`, `revenue`, `net_margin`.
 
-    Visszatér egy normalizált DataFrame-del, amely már használható a
-    MarkovJourneyEngine-hez is.
+    Returns a normalized DataFrame ready for MarkovJourneyEngine.
     """
     df = pd.read_csv(file)
 
     required = ["path", "conversions", "nulls"]
     missing = [c for c in required if c not in df.columns]
     if missing:
-        raise ValueError(f"Hiányzó kötelező oszlopok: {', '.join(missing)}")
+        raise ValueError(f"Missing required columns: {', '.join(missing)}")
 
-    # Szükséges numerikus oszlopok felolvasása ELŐRE, mielőtt bármilyen
-    # alapértékeket deriváltunk belőlük. Hibás értékeket NaN-ra konvertáljuk,
-    # hogy ezeket érvényesíthetjük és jeeljük, nem csendes Null-ra.
+    # Read required numeric columns FIRST, before deriving any defaults.
+    # Bad values are converted to NaN so they can be validated and reported,
+    # not silently converted to zero.
     conversions_num = pd.to_numeric(df["conversions"], errors="coerce")
     nulls_num = pd.to_numeric(df["nulls"], errors="coerce")
 
-    # Érvényességi ellenőrzések ELSŐSORban, a string konverzió elött:
-    # - hiányzó útvonal (NaN) nem láthatóaként "nan" csatorná váljon
-    # - üres vagy szeparátoros csakból álló útvonal nem jelent semmit
+    # Validation FIRST, before string conversion:
+    # - missing path (NaN) must not silently become the "nan" channel
+    # - empty or separator-only path means nothing
     path_str = df["path"].astype(str)
 
     def _has_meaningful_path(p) -> bool:
@@ -104,34 +104,41 @@ def load_csv_journeys(
 
     path_is_empty = ~path_str.map(_has_meaningful_path)
     path_is_missing = df["path"].isna()
-    counts_bad = conversions_num.isna() | nulls_num.isna() | ~np.isfinite(conversions_num) | ~np.isfinite(nulls_num) | (conversions_num < 0) | (nulls_num < 0)
+    counts_bad = (
+        conversions_num.isna()
+        | nulls_num.isna()
+        | ~np.isfinite(conversions_num)
+        | ~np.isfinite(nulls_num)
+        | (conversions_num < 0)
+        | (nulls_num < 0)
+    )
     bad_rows = path_is_missing | path_is_empty | counts_bad
     rejected = []
     if bad_rows.any():
         for idx in df.index[bad_rows]:
             reasons = []
             if path_is_missing.loc[idx]:
-                reasons.append("hiányzó útvonal")
+                reasons.append("missing path")
             if path_is_empty.loc[idx]:
-                reasons.append(f"üres vagy csak szeparátorból álló útvonal: {path_str.loc[idx]!r}")
+                reasons.append(f"empty or separator-only path: {path_str.loc[idx]!r}")
             c = conversions_num.loc[idx]
             n = nulls_num.loc[idx]
             if pd.isna(c) or not np.isfinite(c) or c < 0:
-                reasons.append(f"érvénytelen konverziós szám: {c!r}")
+                reasons.append(f"invalid conversion count: {c!r}")
             if pd.isna(n) or not np.isfinite(n) or n < 0:
-                reasons.append(f"érvénytelen kilépési szám: {n!r}")
-            rejected.append(f"sor {idx}: {'; '.join(reasons)}")
+                reasons.append(f"invalid null count: {n!r}")
+            rejected.append(f"row {idx}: {'; '.join(reasons)}")
         raise ValueError(
-            "A CSV tartalmaz érvénytelen sorokat, amelyeket nem lehet betölteni:\n"
+            "CSV contains invalid rows that cannot be loaded:\n"
             + "\n".join(rejected[:10])
-            + (f"\n... és még {len(rejected) - 10} további sor" if len(rejected) > 10 else "")
+            + (f"\n... and {len(rejected) - 10} more rows" if len(rejected) > 10 else "")
         )
 
-    # Minden megmaradt sor érvényes: konvertáljuk típust.
+    # All remaining rows are valid: convert types.
     df["conversions"] = conversions_num.astype(float)
     df["nulls"] = nulls_num.astype(float)
 
-    # Opcionális oszlopok kiegészítése alapértékekkel (már tisztán numerikus alapokon)
+    # Supplement optional columns with defaults (on clean numeric bases).
     if "rfm_segment" not in df.columns:
         df["rfm_segment"] = default_segment
     if "revenue" not in df.columns:
@@ -141,8 +148,8 @@ def load_csv_journeys(
 
     df["revenue"] = pd.to_numeric(df["revenue"], errors="coerce").astype(float)
     df["net_margin"] = pd.to_numeric(df["net_margin"], errors="coerce").astype(float)
-    # Közös validációs szerződés: counts és margin ugyanazon szabályokkal
-    # ellenőrizhetők a CSV betöltőben és a közvetlen engine használatnál is.
+    # Shared validation contract: counts and margin are checked with the same
+    # rules in both the CSV loader and direct engine usage.
     for idx, row in df.iterrows():
         validate_journey_row(
             str(row["path"]),
@@ -152,20 +159,19 @@ def load_csv_journeys(
             float(row["revenue"]),
         )
 
-    # Pénzügyi véglegesség: NaN vagy végtelen érték nem elfogadható, de a
-    # negatív pénzügyi összeg (pl. visszafizetés) engedélyezett.
+    # Financial finality: NaN or infinite values are not acceptable, but
+    # negative financial amounts (e.g. refunds) are allowed.
     rev_bad = df["revenue"].isna() | ~np.isfinite(df["revenue"])
     if rev_bad.any():
         bad_idx = df.index[rev_bad].tolist()
         raise ValueError(
-            "Érvénytelen pénzügyi érték a következő sorokban: "
-            + ", ".join(map(str, bad_idx[:10]))
+            "Invalid financial value in rows: " + ", ".join(map(str, bad_idx[:10]))
         )
 
-    # Csatornanev-korlátok ellenőrzése MINDENFELEJÉTT, mielőtt a sikeres betöltést
-    # jelennénk meg: a k-rendű állapotnevek "__"-del fűznek össze, és a csatorna
-    # eltávolítás "__"-fel történt felbontásra épül. A Motor később kizáróan
-    # hibával reagálna; itt már használható üzenettel állunk le.
+    # Channel name constraints must be checked BEFORE reporting successful load:
+    # k-order state names join with "__", and channel removal splits on "__".
+    # The Engine would later reject with an error; here we stop with a usable
+    # message instead.
     df["path"] = df["path"].astype(str)
     df["rfm_segment"] = df["rfm_segment"].astype(str)
     reserved = {START, CONVERSION, NULL_STATE}
@@ -175,10 +181,10 @@ def load_csv_journeys(
     bad_channels = [ch for ch in all_channels if "__" in ch or ch in reserved]
     if bad_channels:
         raise ValueError(
-            "Érvénytelen csatornánév: "
+            "Invalid channel name: "
             + ", ".join(repr(ch) for ch in bad_channels)
-            + ". A csatornánév nem tartalmazhat '__'-karaktereket és nem lehet "
-            "egyenlő a fenntartott állaponevekkel: "
+            + ". Channel name must not contain '__' characters and cannot "
+            "equal reserved state names: "
             + ", ".join(repr(s) for s in sorted(reserved))
         )
 
