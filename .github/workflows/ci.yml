@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile check
+        run: |
+          python -m py_compile app.py core/*.py pages/*.py
+
+      - name: Import smoke test
+        run: |
+          python -c "
+import sys; sys.path.insert(0, '.')
+from core.markov_engine import MarkovJourneyEngine, clean_journey, make_k_order_states
+from core.data_loader import load_csv_journeys
+from core.bridge_connectors import export_markov_priors_for_mmm, compare_rfm_transition_matrices, enrich_journeys_with_mba_rules
+print('Import smoke test: OK')
+"
