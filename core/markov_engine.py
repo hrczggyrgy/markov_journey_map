@@ -295,17 +295,37 @@ class MarkovJourneyEngine:
         hibaüzenettel áll meg lugará_null helyett, hogy nullázatlan eredetet adna.
         """
         b_norm = float(np.linalg.norm(b))
+        tol = 1e-6 * max(b_norm, 1e-12)
 
-        # 1. Közvetlen ritka megoldás.
+        def _validate(x: np.ndarray, source: str) -> np.ndarray:
+            x = np.asarray(x).flatten()
+            if not np.all(np.isfinite(x)):
+                raise ValueError(
+                    "Markov-lánc nem abszorbeert: "
+                    f"{source} eredménye nem végtelen (NaN vagy végtelen értéket "
+                    "tartalmaz)."
+                )
+            residual = float(np.linalg.norm(b - A @ x))
+            if residual > tol:
+                raise ValueError(
+                    "Markov-lánc nem abszorbeert: "
+                    f"{source} residuálisa {residual:.3e} meghaladja a "
+                    f"toleranciát ({tol:.3e}). Ez akkor fordulhat elő, ha egy "
+                    "állapotkészlet záró hurokot épít, amelyről nem lehet "
+                    "konvertálni vagy kilépni."
+                )
+            return x
+
+        # 1. Közvetlen ritka megoldás (residuális-ellenőrzéssel).
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("error", spla.MatrixRankWarning)
                 x = spla.spsolve(A, b)
-            x = np.asarray(x).flatten()
-            if np.all(np.isfinite(x)):
-                return x
+            return _validate(x, "spsolve")
+        except spla.MatrixRankWarning:
+            pass  # singular matrix: iterative fallback
         except Exception:
-            pass  # fallback felé
+            pass  # other numerical failure: iterative fallback
 
         # 2. Iteratív legkisebb négyszögek convergencia- és residuális-ellenőrzéssel.
         result = spla.lsqr(A, b, atol=1e-10, btol=1e-10)
@@ -313,9 +333,7 @@ class MarkovJourneyEngine:
         istop = int(result[1])
         r1norm = float(result[3])  # ||r|| = ||b - A x||
 
-        # istop == 1: converged approximate solution. Residuális kell, hogy kis legyen
-        # ||b|| relativben (itt ||b|| = 1.0 az indulási vektor Normja).
-        converged = istop == 1 and r1norm <= 1e-6 * max(b_norm, 1e-12)
+        converged = istop == 1 and r1norm <= tol
         if not converged or not np.all(np.isfinite(x)):
             raise ValueError(
                 "Markov-lánc nem abszorbeert: (I - Q^T) x = b rendszernek nincs stabil "
@@ -324,7 +342,7 @@ class MarkovJourneyEngine:
                 f"{r1norm:.3e}, solver állapot: {istop}."
             )
 
-        return x
+        return _validate(x, "lsqr")
 
     def _visit_vector_from_start(self, Q: sp.csr_matrix) -> np.ndarray:
         """Visszatér a Start-ból indulva várható állapot-látogatásokkal."""

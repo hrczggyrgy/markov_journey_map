@@ -94,9 +94,11 @@ single_share = (n_single / n_converted * 100) if n_converted > 0 else 0.0
 
 c1, c2, c3, c4 = st.columns(4)
 c1.metric("Konvertáló rendelések", f"{n_converted:,}")
-c2.metric("Cross-sell rendelések", f"{n_cs:,}", f"{cs_share:.1f}% share")
-c3.metric("Egytermékes rendelések", f"{n_single:,}", f"{single_share:.1f}% share")
-c4.metric("Nem csatolt útvonalak", f"{n_unmatched:,}")
+c2.metric("Cross-sell rendelések", f"{n_cs:,}")
+c2.caption(f"{cs_share:.1f}% a konvertáló rendelések közül")
+c3.metric("Egytermékes rendelések", f"{n_single:,}")
+c3.caption(f"{single_share:.1f}% a konvertáló rendelések közül")
+c4.metric("Nem csatolt konvertáló útvonalak", f"{n_unmatched:,}")
 
 # -----------------------------------------------------------------------------
 # 4. Sparse Markov motor cross-sell súlyozott Removal Effect
@@ -107,20 +109,25 @@ st.markdown(
     "megjeleníti, melyik csatorna kiesése veszíti le a legtöbb keresztértékesítést."
 )
 
-cs_weighted = cs_df.copy()
+# A Removal Effect csak a cross-sell vásárlásokra számítódik. A konvertáló rendelések
+# között ezek a cross-sell maszk által kiválasztott rekordok.
+cs_weighted = merged.loc[cs_mask].copy()
 cs_weighted["conversions"] = cs_weighted["cross_sell_conversions"]
 
-engine = MarkovJourneyEngine(cs_weighted, k=2, collapse_loops=True)
-base_cvr = engine.solve_prob(weight_col="conversions")
+if cs_weighted.empty or cs_weighted["conversions"].sum() == 0:
+    st.info("Nincs cross-sell konverzió, ezért nem áll rendelkezésre Removal Effect.")
+else:
+    engine = MarkovJourneyEngine(cs_weighted, k=2, collapse_loops=True)
+    base_cvr = engine.solve_prob(weight_col="conversions")
 
-rows = []
-for ch in engine.channels:
-    rem = engine.solve_prob(weight_col="conversions", drop=[ch])
-    re_ = 1.0 - (rem / base_cvr) if base_cvr > 0 else 0.0
-    rows.append({"Csatorna": ch, "Cross-sell Removal Effect (%)": max(0.0, re_) * 100})
+    rows = []
+    for ch in engine.channels:
+        rem = engine.solve_prob(weight_col="conversions", drop=[ch])
+        re_ = 1.0 - (rem / base_cvr) if base_cvr > 0 else 0.0
+        rows.append({"Csatorna": ch, "Cross-sell Removal Effect (%)": max(0.0, re_) * 100})
 
-if rows:
     re_df = pd.DataFrame(rows).sort_values("Cross-sell Removal Effect (%)", ascending=False)
+
     fig_re = px.bar(
         re_df,
         x="Csatorna",
@@ -138,10 +145,9 @@ if rows:
         use_container_width=True,
         hide_index=True,
     )
-else:
-    st.info("Nincs cross-sell konverzió, ezért nem áll rendelkezésre Removal Effect.")
 
 st.caption(
     "Módszer: az MBA tábla alapján csak a cross-sell kosárak konverzióit használjuk a Markov "
-    "átmeneti mátrix súlyozásához, így az attribution a többtermékes vásárlásokhoz igazodik."
+    "átmeneti mátrix súlyozásához. Ez a cross-sell vásárlói csoporton belüli csatornafüggőséget "
+    "jelzi, nem pedig ok-okozatilag bizonyított cross-sell növekedést."
 )

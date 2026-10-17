@@ -117,6 +117,27 @@ def test_csv_loader_rejects_missing_path(tmp_path):
         load_csv_journeys(str(p))
 
 
+def test_csv_loader_rejects_empty_and_separator_paths(tmp_path):
+    p = tmp_path / "empty_path.csv"
+    p.write_text("path,conversions,nulls\n  ,5,5\n> >,3,2\nA>B,1,1\n")
+    with pytest.raises(ValueError, match="üres vagy csak szeparátorból álló"):
+        load_csv_journeys(str(p))
+
+
+def test_csv_loader_rejects_infinite_revenue(tmp_path):
+    p = tmp_path / "inf_rev.csv"
+    p.write_text("path,conversions,nulls,revenue,net_margin\nA>B,1,1,inf,0.3\n")
+    with pytest.raises(ValueError, match="Érvénytelen pénzügyi érték"):
+        load_csv_journeys(str(p))
+
+
+def test_csv_loader_rejects_infinite_margin(tmp_path):
+    p = tmp_path / "inf_mar.csv"
+    p.write_text("path,conversions,nulls,revenue,net_margin\nA>B,1,1,100,inf\n")
+    with pytest.raises(ValueError, match="Érvénytelen pénzügyi érték"):
+        load_csv_journeys(str(p))
+
+
 def test_csv_loader_accepts_valid_rows(tmp_path):
     p = tmp_path / "ok.csv"
     p.write_text("path,conversions,nulls\nA>B,10,5\nC>D,3,2\n")
@@ -338,6 +359,43 @@ def test_demo_revenue_reconciles_with_generator():
         assert row["revenue"] == base_row[4], f"{row['path']}: {row['revenue']} != {base_row[4]}"
 
 
+def test_actual_generator_output_reconciles(tmp_path):
+    """Run the real generator into a temp dir and validate Parquet data contract."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "generate_demo_data",
+        os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "scripts", "generate_demo_data.py"),
+    )
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+
+    # Monkeypatch DATA_DIR to a temp location so we do not clobber repo data.
+    gen.DATA_DIR = str(tmp_path)
+    gen.generate()
+
+    import duckdb
+
+    j = duckdb.execute(
+        "SELECT path_id, conversions, revenue FROM read_parquet(?)",
+        [str(tmp_path / "customer_journeys.parquet")],
+    ).df()
+    b = duckdb.execute(
+        "SELECT path_id FROM read_parquet(?)",
+        [str(tmp_path / "transaction_baskets_mba.parquet")],
+    ).df()
+
+    conv_ids = set(j.loc[j["conversions"] == 1, "path_id"])
+    # Revenue reconciles with aggregate base table.
+    assert abs(float(j["revenue"].sum()) - 101_192_500.0) < 1.0
+    # Every basket references a converting journey.
+    assert set(b["path_id"]) <= conv_ids
+    # No duplicate basket keys (one basket per journey).
+    assert b["path_id"].is_unique
+    # Journey IDs are unique.
+    assert j["path_id"].is_unique
+
+
 # --------------------------------------------------------------------------- #
 # MBA join validation
 # --------------------------------------------------------------------------- #
@@ -471,13 +529,41 @@ def test_solver_rejects_non_absorbing_chain():
 # --------------------------------------------------------------------------- #
 # Application-level smoke tests
 # --------------------------------------------------------------------------- #
-def test_default_app_renders_without_exception():
-    """The app.py entry point must complete without uncaught exceptions."""
+def _run_page_smoke(page_file: str) -> object:
+    """Run a Streamlit page file and return the AppTest result.
+
+    Skips if streamlit.testing is unavailable.
+    """
     try:
         from streamlit.testing.v1 import AppTest
     except ImportError:
         pytest.skip("streamlit.testing not available")
 
-    app_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "app.py")
-    at = AppTest.from_file(app_path).run(timeout=60)
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    path = os.path.join(repo_root, page_file)
+    at = AppTest.from_file(path).run(timeout=60)
+    return at
+
+
+def test_default_app_renders_without_exception():
+    """The app.py entry point must complete without uncaught exceptions."""
+    at = _run_page_smoke("app.py")
     assert len(at.exception) == 0, f"App raised: {at.exception}"
+
+
+def test_rfm_page_renders_without_exception():
+    """RFM segmentation page completes without uncaught exceptions."""
+    at = _run_page_smoke("pages/1_RFM_Segmentation.py")
+    assert len(at.exception) == 0, f"RFM page raised: {at.exception}"
+
+
+def test_mba_page_renders_without_exception():
+    """MBA page completes without uncaught exceptions (cs_df regression)."""
+    at = _run_page_smoke("pages/2_Market_Basket_MBA.py")
+    assert len(at.exception) == 0, f"MBA page raised: {at.exception}"
+
+
+def test_mmm_page_renders_without_exception():
+    """MMM prior calibration page completes without uncaught exceptions."""
+    at = _run_page_smoke("pages/4_MMM_Budget_Optimizer.py")
+    assert len(at.exception) == 0, f"MMM page raised: {at.exception}"
